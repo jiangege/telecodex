@@ -1,0 +1,27 @@
+{
+  "name": "telecodex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --disable-warning=ExperimentalWarning dist/main.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "generate:codex-types": "${CODEX_BIN:-codex} app-server generate-ts --out ./src/generated/codex-app-server"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "grammy": "^1.36.3",
+    "markdown-it": "^14.1.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}
