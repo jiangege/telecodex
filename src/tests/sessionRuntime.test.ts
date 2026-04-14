@@ -3,7 +3,7 @@ import test from "node:test";
 import { reduceSessionRuntimeState } from "../runtime/sessionRuntime.js";
 import { createTestSessionStore } from "./helpers.js";
 
-test("reduceSessionRuntimeState moves running sessions through waiting and terminal states", () => {
+test("reduceSessionRuntimeState moves SDK-backed sessions through active and terminal states", () => {
   const { store, cleanup } = createTestSessionStore();
   try {
     const session = store.getOrCreate({
@@ -22,28 +22,13 @@ test("reduceSessionRuntimeState moves running sessions through waiting and termi
     assert.equal(running.status, "running");
     assert.equal(running.activeTurnId, "turn-31");
 
-    const waiting = reduceSessionRuntimeState(
+    const done = reduceSessionRuntimeState(
       {
         ...session,
         runtimeStatus: running.status,
         runtimeStatusDetail: running.detail,
         runtimeStatusUpdatedAt: running.updatedAt,
         activeTurnId: running.activeTurnId,
-      },
-      {
-        type: "turn.waitingApproval",
-      },
-    );
-    assert.equal(waiting.status, "waiting_approval");
-    assert.equal(waiting.activeTurnId, "turn-31");
-
-    const done = reduceSessionRuntimeState(
-      {
-        ...session,
-        runtimeStatus: waiting.status,
-        runtimeStatusDetail: waiting.detail,
-        runtimeStatusUpdatedAt: waiting.updatedAt,
-        activeTurnId: waiting.activeTurnId,
       },
       {
         type: "turn.completed",

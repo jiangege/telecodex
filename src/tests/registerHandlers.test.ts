@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHandlers } from "../bot/registerHandlers.js";
 
-test("registerHandlers wires all command and message entrypoints", () => {
+test("registerHandlers wires the SDK-first command and message entrypoints", () => {
   const commands: string[][] = [];
   const events: Array<string | string[]> = [];
 
@@ -19,11 +19,10 @@ test("registerHandlers wires all command and message entrypoints", () => {
 
   registerHandlers({
     bot: bot as never,
-    approvals: {} as never,
     config: {} as never,
     store: {} as never,
     projects: {} as never,
-    gateway: {} as never,
+    codex: {} as never,
     buffers: {} as never,
   });
 
@@ -34,15 +33,9 @@ test("registerHandlers wires all command and message entrypoints", () => {
       "help",
       "status",
       "queue",
-      "ask",
-      "tty",
       "stop",
       "project",
       "thread",
-      "threads",
-      "resume",
-      "newthread",
-      "new",
       "cwd",
       "mode",
       "sandbox",
@@ -53,9 +46,5 @@ test("registerHandlers wires all command and message entrypoints", () => {
     ]),
   );
 
-  assert.deepEqual(events, [
-    ["message:forum_topic_created", "message:forum_topic_edited"],
-    "callback_query:data",
-    "message:text",
-  ]);
+  assert.deepEqual(events, [["message:forum_topic_created", "message:forum_topic_edited"], "message:text"]);
 });

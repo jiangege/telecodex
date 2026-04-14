@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GrammyError } from "grammy";
-import { editHtmlMessage, sendHtmlChunks } from "../telegram/delivery.js";
+import { editHtmlMessage, sendHtmlChunks, sendTypingAction } from "../telegram/delivery.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createNoopLogger, createFakeBot } from "./helpers.js";
 
@@ -62,6 +62,27 @@ test("sendHtmlChunks preserves valid html across long formatted messages", async
     assert.equal(count(message.text, "<b>"), count(message.text, "</b>"));
     assert.equal(count(message.text, "<i>"), count(message.text, "</i>"));
   }
+});
+
+test("sendTypingAction targets the current forum topic", async () => {
+  const { bot, chatActions } = createFakeBot();
+
+  await sendTypingAction(
+    bot,
+    {
+      chatId: 1,
+      messageThreadId: 2,
+    },
+    createNoopLogger(),
+  );
+
+  assert.deepEqual(chatActions, [
+    {
+      chatId: 1,
+      action: "typing",
+      messageThreadId: 2,
+    },
+  ]);
 });
 
 test("MessageBuffer.complete falls back to sending a new final message when edit fails", async () => {

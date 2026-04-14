@@ -4,10 +4,13 @@ import {
   isMessageNotModifiedError,
   replaceOrSendHtmlChunks,
   sendHtmlMessage,
+  sendTypingAction,
   shouldFallbackToNewMessage,
 } from "./delivery.js";
 import type { Logger } from "../runtime/logger.js";
 import { renderMarkdownForTelegram, renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
+
+const ACTIVITY_PULSE_INTERVAL_MS = 4_000;
 
 interface BufferState {
   chatId: number;
@@ -16,10 +19,11 @@ interface BufferState {
   text: string;
   progressLines: string[];
   planText: string;
-  planDeltaText: string;
-  reasoningSummaryParts: string[];
+  reasoningSummaryText: string;
   toolOutputText: string;
   timer: NodeJS.Timeout | null;
+  activityTimer: NodeJS.Timeout | null;
+  activityInFlight: boolean;
   lastSentText: string;
   queue: Promise<void>;
 }
@@ -34,6 +38,13 @@ export class MessageBuffer {
   ) {}
 
   async create(key: string, input: { chatId: number; messageThreadId: number | null }): Promise<number> {
+    const previous = this.states.get(key);
+    if (previous) {
+      if (previous.timer) clearTimeout(previous.timer);
+      this.stopActivityPulse(previous);
+      this.states.delete(key);
+    }
+
     const message = await sendHtmlMessage(
       this.bot,
       {
@@ -43,20 +54,23 @@ export class MessageBuffer {
       },
       this.logger,
     );
-    this.states.set(key, {
+    const state: BufferState = {
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
       messageId: message.message_id,
       text: "",
       progressLines: [],
       planText: "",
-      planDeltaText: "",
-      reasoningSummaryParts: [],
+      reasoningSummaryText: "",
       toolOutputText: "",
       timer: null,
+      activityTimer: null,
+      activityInFlight: false,
       lastSentText: "",
       queue: Promise.resolve(),
-    });
+    };
+    this.states.set(key, state);
+    this.startActivityPulse(state);
     return message.message_id;
   }
 
@@ -64,10 +78,10 @@ export class MessageBuffer {
     return this.states.has(key);
   }
 
-  append(key: string, delta: string): void {
+  setReplyDraft(key: string, text: string): void {
     const state = this.states.get(key);
     if (!state) return;
-    state.text += delta;
+    state.text = text;
     this.scheduleFlush(key, state);
   }
 
@@ -94,29 +108,17 @@ export class MessageBuffer {
     this.scheduleFlush(key, state);
   }
 
-  appendPlan(key: string, delta: string): void {
+  setReasoningSummary(key: string, text: string): void {
     const state = this.states.get(key);
     if (!state) return;
-    state.planDeltaText = truncateTail(`${state.planDeltaText}${delta}`, 1200);
+    state.reasoningSummaryText = text.trim();
     this.scheduleFlush(key, state);
   }
 
-  appendReasoningSummary(key: string, delta: string, summaryIndex: number): void {
+  setToolOutput(key: string, text: string): void {
     const state = this.states.get(key);
     if (!state) return;
-    while (state.reasoningSummaryParts.length <= summaryIndex) {
-      state.reasoningSummaryParts.push("");
-    }
-    state.reasoningSummaryParts[summaryIndex] += delta;
-    this.scheduleFlush(key, state);
-  }
-
-  appendToolOutput(key: string, delta: string): void {
-    const state = this.states.get(key);
-    if (!state) return;
-    const normalized = delta.replace(/\r/g, "");
-    if (!normalized.trim()) return;
-    state.toolOutputText = truncateTail(`${state.toolOutputText}${normalized}`, 2000);
+    state.toolOutputText = truncateTail(text.replace(/\r/g, "").trim(), 2000);
     this.scheduleFlush(key, state);
   }
 
@@ -131,6 +133,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) clearTimeout(state.timer);
+    this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
       const chunks = text
@@ -145,6 +148,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) clearTimeout(state.timer);
+    this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex 出错：${message}`));
       this.states.delete(key);
@@ -209,6 +213,44 @@ export class MessageBuffer {
     }
   }
 
+  private startActivityPulse(state: BufferState): void {
+    void this.sendActivityPulse(state);
+    const timer = setInterval(() => {
+      void this.sendActivityPulse(state);
+    }, ACTIVITY_PULSE_INTERVAL_MS);
+    timer.unref?.();
+    state.activityTimer = timer;
+  }
+
+  private stopActivityPulse(state: BufferState): void {
+    if (!state.activityTimer) return;
+    clearInterval(state.activityTimer);
+    state.activityTimer = null;
+  }
+
+  private async sendActivityPulse(state: BufferState): Promise<void> {
+    if (state.activityInFlight) return;
+    state.activityInFlight = true;
+    try {
+      await sendTypingAction(
+        this.bot,
+        {
+          chatId: state.chatId,
+          messageThreadId: state.messageThreadId,
+        },
+        this.logger,
+      );
+    } catch (error) {
+      this.logger?.warn("telegram chat action failed", {
+        chatId: state.chatId,
+        messageThreadId: state.messageThreadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      state.activityInFlight = false;
+    }
+  }
+
   private async replaceWithChunks(state: BufferState, chunks: string[]): Promise<void> {
     const messageId = await replaceOrSendHtmlChunks(
       this.bot,
@@ -246,11 +288,9 @@ function composePendingText(state: BufferState): string {
 
   if (state.planText) {
     sections.push(`[计划]\n${state.planText}`);
-  } else if (state.planDeltaText.trim()) {
-    sections.push(`[计划]\n${state.planDeltaText.trim()}`);
   }
 
-  const reasoningSummary = state.reasoningSummaryParts.map((part) => part.trim()).filter(Boolean).join("\n");
+  const reasoningSummary = state.reasoningSummaryText.trim();
   if (reasoningSummary) {
     sections.push(`[思路摘要]\n${reasoningSummary}`);
   }

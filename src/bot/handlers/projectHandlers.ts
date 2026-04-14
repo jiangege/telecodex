@@ -1,37 +1,27 @@
 import type { CommandContext, Context } from "grammy";
-import { sendHtmlChunks } from "../../telegram/delivery.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
   contextLogFields,
   ensureTopicSession,
-  formatExistingThreadBinding,
   formatPrivateProjectList,
   formatProjectStatus,
-  formatThreadList,
-  formatThreadPathSummary,
-  formatThreadResumeAck,
-  formatThreadResumeResult,
   formatTopicName,
   getProjectForContext,
   getScopedSession,
   hasTopicContext,
-  isPathWithinRoot,
   isPrivateChat,
   isSupergroupChat,
-  listProjectThreads,
   parseSubcommand,
   postTopicReadyMessage,
   resolveExistingDirectory,
-  safeCall,
 } from "../commandSupport.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
-import { refreshTopicStatusPin, sessionLogFields, syncSessionFromCodexRuntime } from "../sessionFlow.js";
 
 const PROJECT_REQUIRED_MESSAGE = "当前 supergroup 还没有绑定项目。\n先执行 /project bind <绝对路径>";
 type ProjectCommandContext = CommandContext<Context>;
 
 export function registerProjectHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, gateway, logger } = deps;
+  const { bot, config, store, projects, logger } = deps;
 
   bot.command("project", async (ctx) => {
     const { command, args } = parseSubcommand(ctx.match.trim());
@@ -73,7 +63,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
           cwd: project.cwd,
         });
         const session = getScopedSession(ctx, store, projects, config, { requireTopic: false });
-        if (session && !isPathWithinRoot(session.cwd, project.cwd)) {
+        if (session && session.cwd !== project.cwd) {
           store.setCwd(session.sessionKey, project.cwd);
         }
         await ctx.reply(
@@ -113,30 +103,21 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       if (hasTopicContext(ctx)) {
         const session = getScopedSession(ctx, store, projects, config);
         if (!session) return;
-        const threadDetails =
-          session.codexThreadId == null ? null : await safeCall(() => gateway.readThread(session.codexThreadId!, false));
         await ctx.reply(
           [
             `当前 thread: ${session.codexThreadId ?? "待创建"}`,
-            `thread path: ${formatThreadPathSummary(threadDetails, session.codexThreadId)}`,
             `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
             `state detail: ${session.runtimeStatusDetail ?? "无"}`,
             `queue: ${store.getQueuedInputCount(session.sessionKey)}`,
             `cwd: ${session.cwd}`,
             "在当前项目中管理 threads：",
-            "/thread list [关键词]",
             "/thread resume <threadId>",
             "/thread new <topic 名称>",
           ].join("\n"),
         );
         return;
       }
-      await ctx.reply("用法:\n/thread list [关键词]\n/thread resume <threadId>\n/thread new <topic 名称>");
-      return;
-    }
-
-    if (command === "list") {
-      await replyProjectThreadList(ctx, deps, args);
+      await ctx.reply("用法:\n/thread resume <threadId>\n/thread new <topic 名称>");
       return;
     }
 
@@ -148,30 +129,12 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       await resumeThreadIntoTopic(ctx, deps, args);
       return;
     }
-
     if (command === "new") {
       await createFreshThreadTopic(ctx, deps, args);
       return;
     }
 
-    await ctx.reply("用法:\n/thread list [关键词]\n/thread resume <threadId>\n/thread new <topic 名称>");
-  });
-
-  bot.command("threads", async (ctx) => {
-    await replyProjectThreadList(ctx, deps, ctx.match.trim());
-  });
-
-  bot.command("resume", async (ctx) => {
-    const threadId = ctx.match.trim();
-    if (!threadId) {
-      await ctx.reply("用法: /resume <threadId>");
-      return;
-    }
-    await resumeThreadIntoTopic(ctx, deps, threadId);
-  });
-
-  bot.command(["newthread", "new"], async (ctx) => {
-    await createFreshThreadTopic(ctx, deps, ctx.match.trim());
+    await ctx.reply("用法:\n/thread resume <threadId>\n/thread new <topic 名称>");
   });
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
@@ -186,46 +149,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
     if (!session) return;
 
     store.setTelegramTopicName(sessionKey, topicName);
-    await refreshTopicStatusPin(bot, store, session, logger);
-    logger?.info("updated telegram topic name from service message", {
-      ...contextLogFields(ctx),
-      sessionKey,
-      topicName,
-      codexThreadId: session.codexThreadId,
-    });
   });
-}
-
-async function replyProjectThreadList(ctx: ProjectCommandContext, deps: BotHandlerDeps, searchTerm: string): Promise<void> {
-  const { bot, projects, gateway, logger } = deps;
-  const project = getProjectForContext(ctx, projects);
-  if (!project) {
-    await ctx.reply(PROJECT_REQUIRED_MESSAGE);
-    return;
-  }
-
-  const threads = await safeCall(() => listProjectThreads(gateway, project, searchTerm));
-  if (threads instanceof Error) {
-    logger?.warn("list project threads failed", {
-      ...contextLogFields(ctx),
-      project: project.name,
-      projectRoot: project.cwd,
-      searchTerm: searchTerm || null,
-      error: threads,
-    });
-    await ctx.reply(`读取 thread 列表失败: ${threads.message}`);
-    return;
-  }
-
-  await sendHtmlChunks(
-    bot,
-    {
-      chatId: ctx.chat.id,
-      messageThreadId: ctx.message?.message_thread_id ?? null,
-      text: formatThreadList(project, threads),
-    },
-    logger,
-  );
 }
 
 async function resumeThreadIntoTopic(
@@ -233,57 +157,15 @@ async function resumeThreadIntoTopic(
   deps: BotHandlerDeps,
   threadId: string,
 ): Promise<void> {
-  const { bot, config, store, projects, gateway, logger } = deps;
+  const { bot, config, store, projects, logger } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
     await ctx.reply(PROJECT_REQUIRED_MESSAGE);
     return;
   }
 
-  const thread = await safeCall(() => gateway.readThread(threadId, false));
-  if (thread instanceof Error) {
-    logger?.warn("read thread failed", {
-      ...contextLogFields(ctx),
-      threadId,
-      error: thread,
-    });
-    await ctx.reply(`读取 thread 失败: ${thread.message}`);
-    return;
-  }
-  if (!isPathWithinRoot(thread.cwd, project.cwd)) {
-    await ctx.reply(
-      [
-        "这个 thread 不属于当前项目。",
-        `project root: ${project.cwd}`,
-        `thread cwd: ${thread.cwd}`,
-      ].join("\n"),
-    );
-    return;
-  }
-
-  const existingBinding = store.getByThreadId(thread.id);
-  if (existingBinding) {
-    if (existingBinding.chatId === String(ctx.chat.id) && existingBinding.messageThreadId == null) {
-      store.setThread(existingBinding.sessionKey, null);
-    } else {
-      await ctx.reply(formatExistingThreadBinding(thread.id, existingBinding));
-      return;
-    }
-  }
-
-  const topicName = formatTopicName(thread.name, thread.preview, "Resumed Thread");
-  const forumTopic = await safeCall(() => bot.api.createForumTopic(ctx.chat.id, topicName));
-  if (forumTopic instanceof Error) {
-    logger?.error("create forum topic for resume failed", {
-      ...contextLogFields(ctx),
-      topicName,
-      threadId: thread.id,
-      error: forumTopic,
-    });
-    await ctx.reply(`创建 topic 失败: ${forumTopic.message}`);
-    return;
-  }
-
+  const topicName = formatTopicName(`Resumed ${threadId.slice(0, 8)}`, "Resumed Thread");
+  const forumTopic = await bot.api.createForumTopic(ctx.chat.id, topicName);
   const session = ensureTopicSession({
     store,
     config,
@@ -291,41 +173,35 @@ async function resumeThreadIntoTopic(
     chatId: ctx.chat.id,
     messageThreadId: forumTopic.message_thread_id,
     topicName: forumTopic.name,
+    threadId,
   });
 
-  const resumed = await safeCall(() =>
-    gateway.resumeThread(thread.id, {
-      cwd: thread.cwd,
-      model: session.model,
-      sandboxMode: session.sandboxMode,
-      approvalPolicy: session.approvalPolicy,
-      reasoningEffort: session.reasoningEffort,
-    }),
-  );
-  if (resumed instanceof Error) {
-    logger?.error("resume thread failed", {
-      ...contextLogFields(ctx),
-      ...sessionLogFields(session),
-      threadId: thread.id,
-      error: resumed,
-    });
-    await ctx.reply(`恢复 thread 失败: ${resumed.message}`);
-    return;
-  }
-
-  store.setThread(session.sessionKey, thread.id);
-  syncSessionFromCodexRuntime(store, session.sessionKey, resumed);
-  store.setCwd(session.sessionKey, thread.cwd);
-  const latestSession = await refreshTopicStatusPin(bot, store, session, logger);
-  logger?.info("thread resumed into topic", {
+  logger?.info("thread id bound into topic", {
     ...contextLogFields(ctx),
-    ...sessionLogFields(latestSession),
-    threadId: thread.id,
-    threadCwd: thread.cwd,
+    sessionKey: session.sessionKey,
+    threadId,
     topicName: forumTopic.name,
   });
-  await postTopicReadyMessage(bot, session, formatThreadResumeResult(thread, forumTopic.name));
-  await ctx.reply(formatThreadResumeAck(thread, forumTopic.name, forumTopic.message_thread_id));
+
+  await ctx.reply(
+    [
+      "已创建 topic 并绑定到已有 thread id。",
+      `topic: ${forumTopic.name}`,
+      `topic id: ${forumTopic.message_thread_id}`,
+      `thread: ${threadId}`,
+      "后续消息会通过 Codex SDK 在该 thread 上继续。",
+    ].join("\n"),
+  );
+
+  await postTopicReadyMessage(
+    bot,
+    session,
+    [
+      "这个 topic 已绑定到已有 Codex thread id。",
+      `thread: ${threadId}`,
+      "直接发送消息即可继续。",
+    ].join("\n"),
+  );
 }
 
 async function createFreshThreadTopic(
@@ -340,18 +216,8 @@ async function createFreshThreadTopic(
     return;
   }
 
-  const topicName = formatTopicName(requestedName, "", "New Thread");
-  const forumTopic = await safeCall(() => bot.api.createForumTopic(ctx.chat.id, topicName));
-  if (forumTopic instanceof Error) {
-    logger?.error("create forum topic for new thread failed", {
-      ...contextLogFields(ctx),
-      topicName,
-      error: forumTopic,
-    });
-    await ctx.reply(`创建 topic 失败: ${forumTopic.message}`);
-    return;
-  }
-
+  const topicName = formatTopicName(requestedName, "New Thread");
+  const forumTopic = await bot.api.createForumTopic(ctx.chat.id, topicName);
   const session = ensureTopicSession({
     store,
     config,
@@ -361,27 +227,29 @@ async function createFreshThreadTopic(
     topicName: forumTopic.name,
   });
 
-  store.setThread(session.sessionKey, null);
-  store.setCwd(session.sessionKey, project.cwd);
-  await refreshTopicStatusPin(bot, store, session, logger);
-  logger?.info("new topic created for fresh thread", {
+  logger?.info("new thread topic created", {
     ...contextLogFields(ctx),
-    ...sessionLogFields(session),
+    sessionKey: session.sessionKey,
     topicName: forumTopic.name,
-    project: project.name,
-    projectRoot: project.cwd,
   });
+
+  await ctx.reply(
+    [
+      "已创建新 topic。",
+      `topic: ${forumTopic.name}`,
+      `topic id: ${forumTopic.message_thread_id}`,
+      "首条普通消息会启动一个新的 Codex SDK thread。",
+    ].join("\n"),
+  );
 
   await postTopicReadyMessage(
     bot,
     session,
     [
       "新 topic 已创建。",
-      "首条消息会在这里创建一个新的 Codex thread。",
-      `project: ${project.name}`,
-      `cwd: ${project.cwd}`,
-      "普通文本如果没有送达 bot，可以先用 /ask <内容>。",
+      "直接发送消息即可开始一个新的 Codex thread。",
+      `cwd: ${session.cwd}`,
+      `model: ${session.model}`,
     ].join("\n"),
   );
-  await ctx.reply(`已创建 topic: ${forumTopic.name}\ntopic id: ${forumTopic.message_thread_id}`);
 }

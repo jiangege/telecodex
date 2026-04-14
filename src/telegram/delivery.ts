@@ -48,6 +48,25 @@ export async function sendPlainChunks(
   return messages;
 }
 
+export async function sendTypingAction(
+  bot: Bot,
+  input: { chatId: number; messageThreadId: number | null },
+  logger?: Logger,
+): Promise<void> {
+  await retryTelegramCall(
+    () =>
+      bot.api.sendChatAction(input.chatId, "typing", {
+        ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
+      }),
+    logger,
+    "telegram chat action rate limited",
+    {
+      chatId: input.chatId,
+      messageThreadId: input.messageThreadId,
+    },
+  );
+}
+
 export async function replaceOrSendHtmlChunks(
   bot: Bot,
   input: {
@@ -139,12 +158,13 @@ export async function editHtmlMessage(
 }
 
 export function isMessageNotModifiedError(error: unknown): boolean {
-  return error instanceof GrammyError && error.description.toLowerCase().includes("message is not modified");
+  return error instanceof GrammyError && descriptionOf(error)?.toLowerCase().includes("message is not modified") === true;
 }
 
 export function shouldFallbackToNewMessage(error: unknown): boolean {
   if (!(error instanceof GrammyError)) return false;
-  const description = error.description.toLowerCase();
+  const description = descriptionOf(error)?.toLowerCase();
+  if (!description) return false;
   return description.includes("message to edit not found") || description.includes("message can't be edited");
 }
 
@@ -154,12 +174,16 @@ function retryAfterMs(error: unknown): number | null {
     if (typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0) {
       return retryAfter * 1000;
     }
-    const match = error.description.match(/retry after\s+(\d+)/i);
+    const match = descriptionOf(error)?.match(/retry after\s+(\d+)/i);
     if (match) {
       return Number(match[1]) * 1000;
     }
   }
   return null;
+}
+
+function descriptionOf(error: GrammyError): string | null {
+  return typeof error.description === "string" ? error.description : null;
 }
 
 export async function retryTelegramCall<T>(

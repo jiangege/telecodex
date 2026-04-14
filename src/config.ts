@@ -20,7 +20,6 @@ export interface SessionRuntimeProfile {
 export interface AppConfig {
   telegramBotToken: string;
   defaultCwd: string;
-  allowedCwds: string[];
   defaultModel: string;
   dbPath: string;
   codexBin: string;
@@ -44,24 +43,11 @@ export function buildConfig(input: {
   return {
     telegramBotToken: input.telegramBotToken,
     defaultCwd,
-    allowedCwds: [defaultCwd],
     defaultModel: input.defaultModel?.trim() || "gpt-5.4",
     dbPath: path.resolve(input.dbPath),
     codexBin: input.codexBin,
     updateIntervalMs: input.updateIntervalMs ?? 700,
   };
-}
-
-export function assertAllowedCwd(cwd: string, allowedCwds: string[]): string {
-  const resolved = path.resolve(cwd);
-  const isAllowed = allowedCwds.some((root) => {
-    const resolvedRoot = path.resolve(root);
-    return resolved === resolvedRoot || resolved.startsWith(`${resolvedRoot}${path.sep}`);
-  });
-  if (!isAllowed) {
-    throw new Error(`Workspace is outside the allowed project root: ${resolved}`);
-  }
-  return resolved;
 }
 
 export function isSessionSandboxMode(value: string): value is SessionSandboxMode {

@@ -34,6 +34,20 @@ test("MessageBuffer completes long markdown replies without losing chunks", asyn
   }
 });
 
+test("MessageBuffer sends a typing pulse while a run is pending", async () => {
+  const { bot, chatActions } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+
+  await buffers.create("thread-typing:turn-1", { chatId: 1, messageThreadId: 2 });
+  await buffers.complete("thread-typing:turn-1", "done");
+
+  assert.deepEqual(chatActions[0], {
+    chatId: 1,
+    action: "typing",
+    messageThreadId: 2,
+  });
+});
+
 function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }

@@ -50,8 +50,8 @@ export function createFakeBot() {
   let nextMessageId = 1;
   const sent: Array<{ chatId: number; text: string; messageThreadId: number | null }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
+  const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const forumEdits: Array<{ chatId: number; messageThreadId: number; name: string }> = [];
-  const pinned: Array<{ chatId: number; messageId: number }> = [];
   const deletedTopics: Array<{ chatId: number; messageThreadId: number }> = [];
 
   const api = {
@@ -67,12 +67,16 @@ export function createFakeBot() {
       edited.push({ chatId, messageId, text });
       return true;
     },
-    async editForumTopic(chatId: number, messageThreadId: number, input: { name: string }) {
-      forumEdits.push({ chatId, messageThreadId, name: input.name });
+    async sendChatAction(chatId: number, action: string, options?: { message_thread_id?: number | null }) {
+      chatActions.push({
+        chatId,
+        action,
+        messageThreadId: options?.message_thread_id ?? null,
+      });
       return true;
     },
-    async pinChatMessage(chatId: number, messageId: number) {
-      pinned.push({ chatId, messageId });
+    async editForumTopic(chatId: number, messageThreadId: number, input: { name: string }) {
+      forumEdits.push({ chatId, messageThreadId, name: input.name });
       return true;
     },
     async deleteForumTopic(chatId: number, messageThreadId: number) {
@@ -87,8 +91,8 @@ export function createFakeBot() {
     api,
     sent,
     edited,
+    chatActions,
     forumEdits,
-    pinned,
     deletedTopics,
   };
 }
@@ -97,7 +101,7 @@ export function createFakeHandlerBot() {
   let nextMessageId = 1;
   const sent: Array<{ chatId: number; text: string; messageThreadId: number | null }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
-  const pinned: Array<{ chatId: number; messageId: number }> = [];
+  const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const createdTopics: Array<{ chatId: number; name: string; messageThreadId: number }> = [];
   const commands = new Map<string, (ctx: any) => Promise<unknown>>();
   const events = new Map<string, (ctx: any) => Promise<unknown>>();
@@ -115,8 +119,12 @@ export function createFakeHandlerBot() {
       edited.push({ chatId, messageId, text });
       return true;
     },
-    async pinChatMessage(chatId: number, messageId: number) {
-      pinned.push({ chatId, messageId });
+    async sendChatAction(chatId: number, action: string, options?: { message_thread_id?: number | null }) {
+      chatActions.push({
+        chatId,
+        action,
+        messageThreadId: options?.message_thread_id ?? null,
+      });
       return true;
     },
     async createForumTopic(chatId: number, name: string) {
@@ -149,7 +157,7 @@ export function createFakeHandlerBot() {
     events,
     sent,
     edited,
-    pinned,
+    chatActions,
     createdTopics,
   };
 }

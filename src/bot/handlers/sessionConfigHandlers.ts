@@ -18,10 +18,9 @@ import {
   getProjectForContext,
   getScopedSession,
 } from "../commandSupport.js";
-import { refreshTopicStatusPin } from "../sessionFlow.js";
 
 export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, logger } = deps;
+  const { bot, config, store, projects } = deps;
 
   bot.command("cwd", async (ctx) => {
     const project = getProjectForContext(ctx, projects);
@@ -37,7 +36,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     try {
       const allowed = assertProjectScopedPath(cwd, project.cwd);
       store.setCwd(session.sessionKey, allowed);
-      await refreshTopicStatusPin(bot, store, session, logger);
       await ctx.reply(`已设置 cwd:\n${allowed}`);
     } catch (error) {
       await ctx.reply(error instanceof Error ? error.message : String(error));
@@ -68,7 +66,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     const profile = profileFromPreset(preset);
     store.setSandboxMode(session.sessionKey, profile.sandboxMode);
     store.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(formatProfileReply("已切换预设。", profile.sandboxMode, profile.approvalPolicy));
   });
 
@@ -87,7 +84,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     }
 
     store.setSandboxMode(session.sessionKey, sandboxMode);
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(formatProfileReply("已更新 sandbox。", sandboxMode, session.approvalPolicy));
   });
 
@@ -106,7 +102,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     }
 
     store.setApprovalPolicy(session.sessionKey, approvalPolicy);
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(formatProfileReply("已更新 approval policy。", session.sandboxMode, approvalPolicy));
   });
 
@@ -128,7 +123,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     const profile = profileFromPreset(value === "on" ? "yolo" : "write");
     store.setSandboxMode(session.sessionKey, profile.sandboxMode);
     store.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(
       formatProfileReply(
         value === "on" ? "已开启 yolo。" : "已关闭 yolo，恢复到 write 预设。",
@@ -149,7 +143,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     }
 
     store.setModel(session.sessionKey, model);
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(`已设置模型: ${model}`);
   });
 
@@ -172,7 +165,6 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
     } else {
       store.setReasoningEffort(session.sessionKey, value);
     }
-    await refreshTopicStatusPin(bot, store, session, logger);
     await ctx.reply(`已设置思考程度: ${value === "default" ? "codex-default" : value}`);
   });
 }

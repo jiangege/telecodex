@@ -4,16 +4,9 @@ import {
   getScopedSession,
 } from "../commandSupport.js";
 import { handleUserText } from "../inputService.js";
-import { getSessionInputState } from "../inputTarget.js";
-import { handleTerminalTextReply } from "../terminalBridge.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
-  const { bot, approvals, config, store, projects, gateway, buffers, logger } = deps;
-
-  bot.on("callback_query:data", async (ctx) => {
-    const handled = await approvals.handleCallback(ctx);
-    if (!handled) await ctx.answerCallbackQuery();
-  });
+  const { bot, config, store, projects, codex, buffers, logger } = deps;
 
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;
@@ -33,19 +26,11 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    const inputState = getSessionInputState(store, session);
-    if (inputState.target === "tty" && inputState.activeBlocker?.consumesPlainText) {
-      if (await handleTerminalTextReply({ ctx, store, gateway, ...(logger ? { logger } : {}) })) return;
-    }
-    if (inputState.target === "user_input" && inputState.activeBlocker?.consumesPlainText) {
-      if (await approvals.handleTextReply(ctx)) return;
-    }
-
     await handleUserText({
       text,
       session,
       store,
-      gateway,
+      codex,
       buffers,
       bot,
       ...(logger ? { logger } : {}),

@@ -51,6 +51,16 @@ test("openDatabase migrates a legacy database to the latest schema version", () 
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE pending_interactions (
+        interaction_id TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        message_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     legacy.close();
 
@@ -61,23 +71,16 @@ test("openDatabase migrates a legacy database to the latest schema version", () 
     const sessionColumns = new Set(
       (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((column) => column.name),
     );
-    const deliveryColumns = new Set(
-      (db.prepare("PRAGMA table_info(turn_deliveries)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    const pendingInteractionColumns = new Set(
-      (db.prepare("PRAGMA table_info(pending_interactions)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-
     assert.equal(sessionColumns.has("sandbox_mode"), true);
     assert.equal(sessionColumns.has("approval_policy"), true);
     assert.equal(sessionColumns.has("telegram_topic_name"), true);
     assert.equal(sessionColumns.has("runtime_status"), true);
     assert.equal(sessionColumns.has("runtime_status_updated_at"), true);
-    assert.equal(deliveryColumns.has("status"), true);
-    assert.equal(deliveryColumns.has("next_attempt_at"), true);
-    assert.equal(deliveryColumns.has("alerted_at"), true);
-    assert.equal(pendingInteractionColumns.has("interaction_id"), true);
-    assert.equal(pendingInteractionColumns.has("request_json"), true);
+    assert.equal(sessionColumns.has("mode"), false);
+    assert.equal(sessionColumns.has("thread_bootstrap_state"), false);
+    assert.equal(sessionColumns.has("pinned_status_text_hash"), false);
+    assert.equal((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_deliveries'").get() as unknown) == null, true);
+    assert.equal((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_interactions'").get() as unknown) == null, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

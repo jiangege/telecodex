@@ -1,31 +1,23 @@
 import { presetFromProfile } from "../../config.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
-import { formatActiveBlockerSummary, formatInputTargetForStatus, getSessionInputState } from "../inputTarget.js";
-import { handleUserText, refreshSessionIfActiveTurnIsStale } from "../inputService.js";
+import { refreshSessionIfActiveTurnIsStale } from "../inputService.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
   contextLogFields,
-  formatAccount,
   formatHelpText,
   formatPrivateStatus,
   formatProjectStatus,
-  formatRateLimits,
   formatReasoningEffort,
-  formatThreadPathSummary,
-  formatTurnDeliveryStats,
   getProjectForContext,
   getScopedSession,
   hasTopicContext,
   isPrivateChat,
-  isYoloEnabled,
   parseSubcommand,
-  safeCall,
 } from "../commandSupport.js";
-import { formatIsoTimestamp, refreshTopicStatusPin, sessionLogFields } from "../sessionFlow.js";
-import { formatTerminalSummary, handleTerminalCommand } from "../terminalBridge.js";
+import { formatIsoTimestamp, sessionLogFields } from "../sessionFlow.js";
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, gateway, buffers, logger } = deps;
+  const { bot, config, store, projects, codex, logger } = deps;
 
   bot.command(["start", "help"], async (ctx) => {
     await ctx.reply(formatHelpText(ctx, projects));
@@ -51,16 +43,10 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     const session = getScopedSession(ctx, store, projects, config);
     if (!session) return;
 
-    const latestSession = await refreshTopicStatusPin(bot, store, session, logger);
-    const threadDetails =
-      latestSession.codexThreadId == null ? null : await safeCall(() => gateway.readThread(latestSession.codexThreadId!, false));
-    const deliveryStats = latestSession.codexThreadId ? store.getTurnDeliveryStatsForThread(latestSession.codexThreadId) : null;
+    const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
     const queueDepth = store.getQueuedInputCount(latestSession.sessionKey);
     const queuedPreview = store.listQueuedInputs(latestSession.sessionKey, 3);
-    const terminalSummary = formatTerminalSummary(store, latestSession.sessionKey);
-    const inputState = getSessionInputState(store, latestSession);
-    const account = await safeCall(() => gateway.account());
-    const rateLimits = await safeCall(() => gateway.rateLimits());
+    const activeRun = codex.getActiveRun(latestSession.sessionKey);
 
     await ctx.reply(
       [
@@ -68,28 +54,22 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         `project: ${project.name}`,
         `root: ${project.cwd}`,
         `thread: ${latestSession.codexThreadId ?? "待创建"}`,
-        `thread path: ${formatThreadPathSummary(threadDetails, latestSession.codexThreadId)}`,
         `state: ${formatSessionRuntimeStatus(latestSession.runtimeStatus)}`,
         `state detail: ${latestSession.runtimeStatusDetail ?? "无"}`,
         `state updated: ${formatIsoTimestamp(latestSession.runtimeStatusUpdatedAt)}`,
         `active turn: ${latestSession.activeTurnId ?? "无"}`,
-        `input target: ${formatInputTargetForStatus(inputState)}`,
-        `input summary: ${inputState.summary}`,
-        `active blocker: ${formatActiveBlockerSummary(inputState)}`,
-        `pending blockers: ${inputState.pendingBlockers}`,
+        `active run: ${activeRun ? formatIsoTimestamp(activeRun.startedAt) : "无"}`,
+        `active run thread: ${activeRun?.threadId ?? "无"}`,
+        `active run last event: ${activeRun?.lastEventType ?? "无"}`,
+        `active run last update: ${activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "无"}`,
         `queue: ${queueDepth}`,
         `queue next: ${formatQueuedPreview(queuedPreview)}`,
-        `tty: ${terminalSummary}`,
         `cwd: ${latestSession.cwd}`,
         `preset: ${presetFromProfile(latestSession)}`,
         `sandbox: ${latestSession.sandboxMode}`,
         `approval: ${latestSession.approvalPolicy}`,
         `model: ${latestSession.model}`,
         `effort: ${formatReasoningEffort(latestSession.reasoningEffort)}`,
-        `yolo: ${isYoloEnabled(latestSession) ? "on" : "off"}`,
-        `deliveries: ${formatTurnDeliveryStats(deliveryStats)}`,
-        `account: ${formatAccount(account)}`,
-        `rate: ${formatRateLimits(rateLimits)}`,
       ].join("\n"),
     );
   });
@@ -102,14 +82,11 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     if (!command) {
       const queued = store.listQueuedInputs(session.sessionKey, 5);
       const queueDepth = store.getQueuedInputCount(session.sessionKey);
-      const inputState = getSessionInputState(store, session);
       await ctx.reply(
         [
           "队列",
           `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
           `active turn: ${session.activeTurnId ?? "无"}`,
-          `input target: ${formatInputTargetForStatus(inputState)}`,
-          `input summary: ${inputState.summary}`,
           `queue: ${queueDepth}`,
           queued.length > 0 ? `items:\n${formatQueuedItems(queued)}` : "items: 空",
           "用法: /queue | /queue drop <id> | /queue clear",
@@ -120,7 +97,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
     if (command === "clear") {
       const removed = store.clearQueuedInputs(session.sessionKey);
-      await refreshTopicStatusPin(bot, store, session, logger);
       await ctx.reply(`已清空队列，删除 ${removed} 条待处理消息。`);
       return;
     }
@@ -132,7 +108,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         return;
       }
       const removed = store.removeQueuedInputForSession(session.sessionKey, id);
-      await refreshTopicStatusPin(bot, store, session, logger);
       await ctx.reply(removed ? `已移除队列项 #${id}。` : `没有找到队列项 #${id}。`);
       return;
     }
@@ -140,74 +115,25 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     await ctx.reply("用法: /queue | /queue drop <id> | /queue clear");
   });
 
-  bot.command("ask", async (ctx) => {
-    const session = getScopedSession(ctx, store, projects, config);
-    if (!session) return;
-
-    const text = ctx.match.trim();
-    if (!text) {
-      await ctx.reply("用法: /ask <内容>");
-      return;
-    }
-
-    logger?.info("received telegram ask command", {
-      ...contextLogFields(ctx),
-      textLength: text.length,
-      sessionKey: session.sessionKey,
-      codexThreadId: session.codexThreadId,
-    });
-
-    await handleUserText({
-      text,
-      session,
-      store,
-      gateway,
-      buffers,
-      bot,
-      ...(logger ? { logger } : {}),
-    });
-  });
-
-  bot.command("tty", async (ctx) => {
-    const session = getScopedSession(ctx, store, projects, config);
-    if (!session) return;
-
-    await handleTerminalCommand({
-      ctx,
-      session,
-      store,
-      gateway,
-      ...(logger ? { logger } : {}),
-    });
-  });
-
   bot.command("stop", async (ctx) => {
     const session = getScopedSession(ctx, store, projects, config);
     if (!session) return;
 
-    if (session.runtimeStatus === "preparing" && !session.activeTurnId) {
-      await ctx.reply("当前请求还在准备阶段，尚未拿到可中断的 turn。等几秒后再试 /stop。");
-      return;
-    }
-    if (!session.codexThreadId || !session.activeTurnId) {
-      await ctx.reply("当前没有正在运行的 Codex turn。");
+    const latest = store.get(session.sessionKey) ?? session;
+    if (!codex.isRunning(session.sessionKey)) {
+      await ctx.reply("当前没有正在运行的 Codex SDK turn。");
       return;
     }
 
     try {
-      await gateway.interruptTurn(session.codexThreadId, session.activeTurnId);
-      await ctx.reply("已请求中断当前 turn，等待 Codex 确认停止。");
+      codex.interrupt(session.sessionKey);
+      await ctx.reply("已请求中断当前运行，等待 Codex SDK 停止。");
     } catch (error) {
       logger?.warn("interrupt turn failed", {
         ...contextLogFields(ctx),
-        ...sessionLogFields(session),
+        ...sessionLogFields(latest),
         error,
       });
-      const latest = await refreshSessionIfActiveTurnIsStale(session, store, gateway, buffers, bot, logger);
-      if (!latest.activeTurnId) {
-        await ctx.reply("当前 turn 已结束，本地状态已同步。");
-        return;
-      }
       await ctx.reply(`中断失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   });

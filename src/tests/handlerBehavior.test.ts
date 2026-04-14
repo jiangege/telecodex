@@ -1,24 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHandlers } from "../bot/registerHandlers.js";
-import { recordTerminalInteraction } from "../bot/terminalBridge.js";
-import { createFakeHandlerBot, createTestStores } from "./helpers.js";
+import type { ThreadEvent } from "@openai/codex-sdk";
+import { MessageBuffer } from "../telegram/messageBuffer.js";
+import { handleUserText } from "../bot/inputService.js";
+import { createFakeBot, createNoopLogger, createTestStores } from "./helpers.js";
 
-function createConfig() {
+function createConfigRuntime(events: ThreadEvent[], options?: { running?: boolean }) {
+  let running = options?.running ?? false;
   return {
-    telegramBotToken: "test-token",
-    defaultCwd: process.cwd(),
-    allowedCwds: [process.cwd()],
-    defaultModel: "gpt-5.4",
-    dbPath: "/tmp/telecodex-test.sqlite",
-    codexBin: "codex",
-    updateIntervalMs: 1000,
+    isRunning: () => running,
+    getActiveRun: () => null,
+    interrupt: () => {
+      running = false;
+      return true;
+    },
+    run: async ({ callbacks, profile }: any) => {
+      running = true;
+      let threadId = profile.threadId ?? "thread-501";
+      let finalResponse = "done";
+      for (const event of events) {
+        if (event.type === "thread.started") {
+          threadId = event.thread_id;
+          await callbacks?.onThreadStarted?.(event.thread_id);
+        }
+        if (
+          (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") &&
+          event.item.type === "agent_message"
+        ) {
+          finalResponse = event.item.text;
+        }
+        await callbacks?.onEvent?.(event);
+      }
+      running = false;
+      return {
+        threadId,
+        items: [],
+        finalResponse,
+        usage: null,
+      };
+    },
   };
 }
 
-test("/queue clear refreshes topic status pin after removing queued inputs", async () => {
+test("handleUserText queues when a session already has an active SDK run", async () => {
   const { store, projects, cleanup } = createTestStores();
-  const { bot, commands, edited } = createFakeHandlerBot();
+  const { bot, sent } = createFakeBot();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -29,47 +55,34 @@ test("/queue clear refreshes topic status pin after removing queued inputs", asy
       defaultCwd: process.cwd(),
       defaultModel: "gpt-5.4",
     });
-    store.setPinnedStatusMessage(session.sessionKey, 2100);
-    store.enqueueInput(session.sessionKey, "first");
-    store.enqueueInput(session.sessionKey, "second");
+    store.setRuntimeState(session.sessionKey, {
+      status: "running",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+      activeTurnId: "sdk-turn-busy",
+    });
 
-    registerHandlers({
-      bot,
-      approvals: {
-        handleCallback: async () => false,
-        handleTextReply: async () => false,
-      } as never,
-      config: createConfig(),
+    const result = await handleUserText({
+      text: "follow up",
+      session,
       store,
-      projects,
-      gateway: {} as never,
-      buffers: {} as never,
+      codex: createConfigRuntime([], { running: true }) as never,
+      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      bot,
+      logger: createNoopLogger(),
     });
 
-    const replies: string[] = [];
-    const handler = commands.get("queue");
-    assert.ok(handler);
-    await handler!({
-      chat: { id: -100, type: "supergroup" },
-      message: { message_thread_id: 210 },
-      match: "clear",
-      reply: async (text: string) => {
-        replies.push(text);
-        return undefined;
-      },
-    });
-
-    assert.equal(store.getQueuedInputCount(session.sessionKey), 0);
-    assert.match(replies.at(-1) ?? "", /已清空队列/);
-    assert.match(edited.at(-1)?.text ?? "", /queue: <code>0<\/code>/);
+    assert.equal(result.status, "queued");
+    assert.equal(store.getQueuedInputCount(session.sessionKey), 1);
+    assert.match(sent.at(-1)?.text ?? "", /已把你的消息加入队列/);
   } finally {
     cleanup();
   }
 });
 
-test("/queue drop refreshes topic status pin after removing one queued input", async () => {
+test("handleUserText starts a SDK run, persists thread id, and finishes idle", async () => {
   const { store, projects, cleanup } = createTestStores();
-  const { bot, commands, edited } = createFakeHandlerBot();
+  const { bot, edited } = createFakeBot();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -80,180 +93,33 @@ test("/queue drop refreshes topic status pin after removing one queued input", a
       defaultCwd: process.cwd(),
       defaultModel: "gpt-5.4",
     });
-    store.setPinnedStatusMessage(session.sessionKey, 2110);
-    const first = store.enqueueInput(session.sessionKey, "first");
-    store.enqueueInput(session.sessionKey, "second");
+    const events: ThreadEvent[] = [
+      { type: "thread.started", thread_id: "thread-211" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "todo-1", type: "todo_list", items: [{ text: "inspect", completed: false }] } },
+      { type: "item.updated", item: { id: "msg-1", type: "agent_message", text: "working" } },
+      { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "final answer" } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2 } },
+    ];
 
-    registerHandlers({
-      bot,
-      approvals: {
-        handleCallback: async () => false,
-        handleTextReply: async () => false,
-      } as never,
-      config: createConfig(),
+    const result = await handleUserText({
+      text: "please help",
+      session,
       store,
-      projects,
-      gateway: {} as never,
-      buffers: {} as never,
-    });
-
-    const replies: string[] = [];
-    const handler = commands.get("queue");
-    assert.ok(handler);
-    await handler!({
-      chat: { id: -100, type: "supergroup" },
-      message: { message_thread_id: 211 },
-      match: `drop ${first.id}`,
-      reply: async (text: string) => {
-        replies.push(text);
-        return undefined;
-      },
-    });
-
-    assert.equal(store.getQueuedInputCount(session.sessionKey), 1);
-    assert.match(replies.at(-1) ?? "", /已移除队列项/);
-    assert.match(edited.at(-1)?.text ?? "", /queue: <code>1<\/code>/);
-  } finally {
-    cleanup();
-  }
-});
-
-test("message:text routes plain text to terminal stdin when tty input is pending", async () => {
-  const { store, projects, cleanup } = createTestStores();
-  const { bot, events } = createFakeHandlerBot();
-  try {
-    projects.upsert({ chatId: "-100", cwd: process.cwd() });
-    const session = store.getOrCreate({
-      sessionKey: "-100:212",
-      chatId: "-100",
-      messageThreadId: "212",
-      telegramTopicName: "demo",
-      defaultCwd: process.cwd(),
-      defaultModel: "gpt-5.4",
-    });
-    recordTerminalInteraction(store, session.sessionKey, {
-      threadId: "thread-212",
-      turnId: "turn-212",
-      itemId: "item-212",
-      processId: "proc-212",
-      stdin: "Enter value:",
-    });
-
-    const writes: Array<{ processId: string; text?: string; closeStdin?: boolean }> = [];
-    const replies: string[] = [];
-    registerHandlers({
+      codex: createConfigRuntime(events) as never,
+      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
       bot,
-      approvals: {
-        handleCallback: async () => false,
-        handleTextReply: async () => {
-          throw new Error("approvals should not handle tty input");
-        },
-      } as never,
-      config: createConfig(),
-      store,
-      projects,
-      gateway: {
-        writeTerminalInput: async (processId: string, input: { text?: string; closeStdin?: boolean }) => {
-          writes.push({ processId, ...input });
-        },
-        startThread: async () => {
-          throw new Error("should not start a new turn");
-        },
-      } as never,
-      buffers: {} as never,
+      logger: createNoopLogger(),
     });
 
-    const handler = events.get("message:text");
-    assert.ok(handler);
-    await handler!({
-      chat: { id: -100, type: "supergroup" },
-      from: { id: 1 },
-      message: { text: "123", message_thread_id: 212 },
-      reply: async (text: string) => {
-        replies.push(text);
-        return undefined;
-      },
-    });
+    assert.equal(result.status, "started");
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.deepEqual(writes.at(-1), {
-      processId: "proc-212",
-      text: "123\n",
-    });
-    assert.match(replies.at(-1) ?? "", /已发送到终端 stdin/);
-  } finally {
-    cleanup();
-  }
-});
-
-test("message:text routes plain text to approvals text reply when user input is pending", async () => {
-  const { store, projects, cleanup } = createTestStores();
-  const { bot, events } = createFakeHandlerBot();
-  try {
-    projects.upsert({ chatId: "-100", cwd: process.cwd() });
-    const session = store.getOrCreate({
-      sessionKey: "-100:213",
-      chatId: "-100",
-      messageThreadId: "213",
-      telegramTopicName: "demo",
-      defaultCwd: process.cwd(),
-      defaultModel: "gpt-5.4",
-    });
-    store.putPendingInteraction({
-      interactionId: "tool-213",
-      sessionKey: session.sessionKey,
-      kind: "tool_user_input",
-      requestJson: JSON.stringify({
-        id: "req-213",
-        method: "item/tool/requestUserInput",
-        params: {
-          threadId: "thread-213",
-          turnId: "turn-213",
-          itemId: "item-213",
-          questions: [
-            {
-              id: "lang",
-              header: "Language",
-              question: "Choose one",
-              isOther: false,
-              isSecret: false,
-              options: [{ label: "TypeScript", description: "preferred" }],
-            },
-          ],
-        },
-      }),
-    });
-
-    let approvalReplies = 0;
-    registerHandlers({
-      bot,
-      approvals: {
-        handleCallback: async () => false,
-        handleTextReply: async () => {
-          approvalReplies += 1;
-          return true;
-        },
-      } as never,
-      config: createConfig(),
-      store,
-      projects,
-      gateway: {
-        startThread: async () => {
-          throw new Error("should not start a new turn");
-        },
-      } as never,
-      buffers: {} as never,
-    });
-
-    const handler = events.get("message:text");
-    assert.ok(handler);
-    await handler!({
-      chat: { id: -100, type: "supergroup" },
-      from: { id: 1 },
-      message: { text: "TypeScript", message_thread_id: 213 },
-      reply: async () => undefined,
-    });
-
-    assert.equal(approvalReplies, 1);
+    const latest = store.get(session.sessionKey);
+    assert.equal(latest?.codexThreadId, "thread-211");
+    assert.equal(latest?.runtimeStatus, "idle");
+    assert.equal(latest?.activeTurnId, null);
+    assert.ok(edited.some((entry) => entry.text.includes("final answer")));
   } finally {
     cleanup();
   }

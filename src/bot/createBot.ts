@@ -1,40 +1,31 @@
 import { Bot } from "grammy";
 import type { AppConfig } from "../config.js";
-import type { CodexGateway } from "../codex/CodexGateway.js";
-import { ApprovalManager } from "../codex/approvals.js";
+import type { CodexSdkRuntime } from "../codex/sdkRuntime.js";
+import type { Logger } from "../runtime/logger.js";
 import type { ProjectStore } from "../store/projects.js";
 import type { SessionStore } from "../store/sessions.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
-import type { Logger } from "../runtime/logger.js";
 import { authMiddleware } from "./auth.js";
-import { handleCodexNotification } from "./codexNotificationHandler.js";
-import {
-  handleUserText,
-  recoverActiveTopicSessions,
-  refreshSessionIfActiveTurnIsStale,
-} from "./inputService.js";
+import { recoverActiveTopicSessions } from "./inputService.js";
 import { registerHandlers } from "./registerHandlers.js";
 
-export {
-  handleUserText,
-  refreshSessionIfActiveTurnIsStale,
-} from "./inputService.js";
-export { handleCodexNotification } from "./codexNotificationHandler.js";
-export { recoverPendingTurnDeliveries, refreshLiveSessionHeartbeats } from "./turnDeliveryService.js";
+export { handleUserText, refreshSessionIfActiveTurnIsStale } from "./inputService.js";
 
-export function createBot(input: {
+export function wireBot(input: {
+  bot: Bot;
   config: AppConfig;
   store: SessionStore;
   projects: ProjectStore;
-  gateway: CodexGateway;
+  codex: CodexSdkRuntime;
   bootstrapCode: string | null;
   logger?: Logger;
   onAdminBound?: (userId: number) => void;
-}): Bot {
-  const { config, store, projects, gateway, bootstrapCode, logger, onAdminBound } = input;
-  const bot = new Bot(config.telegramBotToken);
+}): {
+  bot: Bot;
+  buffers: MessageBuffer;
+} {
+  const { bot, config, store, projects, codex, bootstrapCode, logger, onAdminBound } = input;
   const buffers = new MessageBuffer(bot, config.updateIntervalMs, logger?.child("message-buffer"));
-  const approvals = new ApprovalManager(bot, gateway, store, logger?.child("approvals"));
 
   bot.use(
     authMiddleware({
@@ -58,24 +49,37 @@ export function createBot(input: {
     });
   }
 
-  gateway.onNotification((event) => {
-    void handleCodexNotification(event, store, buffers, bot, gateway, logger);
-  });
-  gateway.onServerRequest((request) => {
-    void approvals.handleServerRequest(request);
-  });
-
   registerHandlers({
     bot,
-    approvals,
     config,
     store,
     projects,
-    gateway,
+    codex,
     buffers,
     ...(logger ? { logger } : {}),
   });
 
-  void recoverActiveTopicSessions(store, gateway, buffers, bot, logger);
+  void recoverActiveTopicSessions(store, codex, buffers, bot, logger);
+  return {
+    bot,
+    buffers,
+  };
+}
+
+export function createBot(input: {
+  config: AppConfig;
+  store: SessionStore;
+  projects: ProjectStore;
+  codex: CodexSdkRuntime;
+  bootstrapCode: string | null;
+  logger?: Logger;
+  onAdminBound?: (userId: number) => void;
+}): Bot {
+  const { config } = input;
+  const bot = new Bot(config.telegramBotToken);
+  wireBot({
+    bot,
+    ...input,
+  });
   return bot;
 }

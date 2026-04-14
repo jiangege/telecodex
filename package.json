@@ -14,13 +14,13 @@
     "build": "tsc -p tsconfig.json",
     "start": "node --disable-warning=ExperimentalWarning dist/cli.js",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/tests/**/*.test.ts",
-    "generate:codex-types": "codex app-server generate-ts --out ./src/generated/codex-app-server"
+    "test": "node --import tsx --test src/tests/**/*.test.ts"
   },
   "dependencies": {
     "@clack/prompts": "^0.11.0",
     "@grammyjs/runner": "^2.0.3",
     "@napi-rs/keyring": "^1.2.0",
+    "@openai/codex-sdk": "^0.120.0",
     "clipboardy": "^4.0.0",
     "grammy": "^1.36.3",
     "markdown-it": "^14.1.0",

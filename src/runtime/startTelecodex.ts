@@ -1,12 +1,6 @@
 import { run } from "@grammyjs/runner";
 import { createBot } from "../bot/createBot.js";
-import { CodexAppServerClient } from "../codex/CodexAppServerClient.js";
-import { CodexGateway } from "../codex/CodexGateway.js";
-import { MaintenanceRunner } from "../maintenance/MaintenanceRunner.js";
-import { createRecoverPendingTurnDeliveriesTask } from "../maintenance/tasks/recoverPendingTurnDeliveries.js";
-import { createRefreshLiveSessionHeartbeatsTask } from "../maintenance/tasks/refreshLiveSessionHeartbeats.js";
-import { createReconcileTelegramTopicsTask } from "../maintenance/tasks/reconcileTelegramTopics.js";
-import { refreshAllTopicStatusPins } from "../telegram/topicStatus.js";
+import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import { bootstrapRuntime } from "./bootstrap.js";
 import { acquireInstanceLock, type InstanceLock } from "./instanceLock.js";
 import { createLogger, type Logger } from "./logger.js";
@@ -33,17 +27,15 @@ export async function startTelecodex(): Promise<void> {
     });
 
     const { config, store, projects, bootstrapCode, botUsername } = await bootstrapRuntime();
-    const codexClient = new CodexAppServerClient({
+    const codex = new CodexSdkRuntime({
       codexBin: config.codexBin,
-      cwd: config.defaultCwd,
-      logger: logger.child("codex-app-server"),
+      logger: logger.child("codex-sdk"),
     });
-    const gateway = new CodexGateway(codexClient);
     const bot = createBot({
       config,
       store,
       projects,
-      gateway,
+      codex,
       bootstrapCode,
       logger: logger.child("bot"),
       onAdminBound: (userId) => {
@@ -52,30 +44,6 @@ export async function startTelecodex(): Promise<void> {
         console.log("telecodex is now ready to accept commands from this Telegram account");
       },
     });
-    const maintenance = new MaintenanceRunner(
-      [
-        createRecoverPendingTurnDeliveriesTask({
-          bot,
-          store,
-          gateway,
-          logger: logger.child("maintenance/recover-turn-deliveries"),
-        }),
-        createRefreshLiveSessionHeartbeatsTask({
-          bot,
-          store,
-          logger: logger.child("maintenance/live-session-heartbeats"),
-        }),
-        createReconcileTelegramTopicsTask({
-          bot,
-          store,
-          gateway,
-          logger: logger.child("maintenance/reconcile-topics"),
-        }),
-      ],
-      {
-        logger: logger.child("maintenance"),
-      },
-    );
     const botProfile = await bot.api.getMe();
     if (!botProfile.can_read_all_group_messages) {
       logger.warn("telegram bot privacy mode is enabled; plain topic messages will not reach telecodex", {
@@ -86,15 +54,11 @@ export async function startTelecodex(): Promise<void> {
       console.warn("Telegram may take a few minutes to apply the change");
     }
 
-    await codexClient.start();
     const runner = run(bot);
-    void refreshAllTopicStatusPins(bot, store, logger.child("bot/topic-status-startup"));
-    maintenance.start();
 
     const stopRuntime = (signal: NodeJS.Signals): void => {
       logger.info("received shutdown signal", { signal });
-      maintenance.stop();
-      codexClient.stop();
+      codex.interruptAll();
       runner.stop();
       instanceLock?.release();
       instanceLock = null;

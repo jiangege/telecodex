@@ -1,8 +1,8 @@
 # telecodex
 
-Telegram bridge for local Codex through `codex app-server`.
+Telegram bridge for local Codex built on the official TypeScript SDK.
 
-## Architecture
+## Model
 
 ```text
 Telegram private chat
@@ -10,18 +10,28 @@ Telegram private chat
 
 Telegram forum supergroup
   -> one project per supergroup
-  -> one Codex thread per topic
+  -> one topic per Codex thread
 
 Telegram
   -> grammY bot + runner
-  -> CodexGateway
-  -> codex app-server over stdio
-  -> local Codex ChatGPT auth
+  -> CodexSdkRuntime
+  -> @openai/codex-sdk
+  -> local Codex login
 ```
 
-The bot uses `codex app-server` as a local child process. It does not require
-an OpenAI API key when the local Codex installation is already logged in with
-ChatGPT.
+The bot talks to local Codex through `@openai/codex-sdk`, which wraps the local
+`codex` CLI. It does not depend on `codex app-server`.
+
+## Runtime contract
+
+- Telegram is treated as a remote task interface, not a clone of Codex Desktop.
+- One topic maps to one Codex SDK thread.
+- Each topic has at most one active SDK run.
+- Follow-up messages during an active run are queued and processed in order.
+- A run immediately creates a normal Telegram status message; progress edits that message.
+- telecodex does not use pinned messages for live state.
+- While a run is pending, the bot sends Telegram `typing` activity so the chat does not look dead during long SDK gaps.
+- `/status` is the source of truth for runtime state, active thread id, last SDK event, and queue depth.
 
 ## Setup
 
@@ -52,29 +62,29 @@ telecodex
 
 For local development, `npm run dev` runs the same entrypoint without linking.
 
-## First Launch
+## First launch
 
-On first launch, `telecodex` runs an interactive setup flow:
+On first launch, `telecodex`:
 
-1. If it cannot find a working Codex binary, it asks for the path once.
-2. If Codex is not logged in, it prompts you to run `codex login`.
-3. If no Telegram bot token is stored yet, it asks you to paste one and validates it with Telegram.
-4. If no Telegram admin is bound yet, it generates a one-time bootstrap code and copies it to the clipboard when possible.
-5. You send that bootstrap code to the bot in a private chat. The first successful sender becomes the permanent admin for this bot instance.
-6. The terminal stays running and prints the binding result as soon as Telegram confirms it. No restart is needed.
+1. Finds or asks for the local `codex` binary path.
+2. Verifies Codex login.
+3. Asks for a Telegram bot token if none is stored yet.
+4. Generates a one-time bootstrap code if no Telegram admin is bound yet.
+5. Waits for that code in a private chat. The first successful sender becomes the permanent admin for this bot instance.
 
 There are no required environment variables in the normal startup path.
 
-## Working Model
+## Working model
 
 - Private chat is only for bootstrap and lightweight management.
 - One forum supergroup represents one project.
 - The project root is bound once with `/project bind <absolute-path>`.
 - Each topic in that supergroup is one Codex thread.
+- Work happens by sending normal messages inside the topic.
 - `/thread new <topic-name>` automatically creates a new topic; the first normal message inside it starts a fresh Codex thread.
-- `/thread resume <threadId>` automatically creates a new topic and binds it to an existing desktop/CLI thread.
+- `/thread resume <threadId>` automatically creates a new topic and binds it to an existing thread id.
 
-## Stored State
+## Stored state
 
 - Telegram bot token: stored in the system keychain when available, otherwise falls back to local state.
 - Admin binding, project bindings, and topic/session state: stored in a local SQLite database under `~/.telecodex/`.
@@ -84,9 +94,7 @@ There are no required environment variables in the normal startup path.
 ## Logs
 
 - Startup prints the active log file path.
-- Telegram middleware errors, message edit failures, and handled command failures are appended to the log file.
-- `codex app-server` stderr, non-JSON stdout lines, request timeouts, and exit events are appended to the same log file.
-- A low-frequency maintenance reconciler runs immediately on startup, then keeps removing bindings for Telegram topics that were manually deleted and posts a summary to the chat's General topic.
+- Telegram middleware errors and message edit failures are appended to the log file.
 - When you need to debug a running instance later, inspect `~/.telecodex/logs/telecodex.log` first.
 
 ## Commands
@@ -97,27 +105,22 @@ There are no required environment variables in the normal startup path.
 - `/project bind <absolute-path>` - bind the current supergroup to a project root.
 - `/project unbind` - remove the current supergroup's project binding.
 - `/thread` - in a topic, show the current attached thread id.
-- `/thread list [keyword]` - list recent resumable Codex threads that belong to the current project.
 - `/thread new <topic-name>` - create a new topic for a fresh Codex thread.
-- `/thread resume <threadId>` - create a new topic and bind it to an existing Codex thread, including threads created in the desktop app.
-- `/stop` - interrupt the active Codex turn.
+- `/thread resume <threadId>` - create a new topic and bind it to an existing Codex thread id.
+- Normal text in a topic - send that message to the current Codex thread.
+- `/stop` - interrupt the active SDK run.
 - `/cwd <absolute-path>` - switch the topic working directory inside the current project root.
 - `/mode read|write|danger|yolo` - switch runtime presets for the current topic.
 - `/sandbox <read-only|workspace-write|danger-full-access>` - set sandbox explicitly for the current topic.
 - `/approval <on-request|on-failure|never>` - set approval policy explicitly for the current topic.
 - `/yolo on|off` - quick toggle for `danger-full-access + never` on the current topic.
 - `/model <model-id>` - set model for the current topic.
-
-The bot is private by default. On a fresh database it generates a bootstrap
-code at startup, and the first private-chat user who sends that code is stored
-as the only admin in the local SQLite database. That bootstrap step only
-happens once. If the process restarts before binding succeeds, the same
-bootstrap code is reused until it is claimed.
+- `/effort default|minimal|low|medium|high|xhigh` - set model reasoning effort for the current topic.
 
 ## Notes
 
 - Long polling is managed by `@grammyjs/runner`.
-- v1 uses the app-server stdio transport, not WebSocket.
 - Streaming updates are throttled before editing Telegram messages.
 - Final answers are rendered from Markdown to Telegram-safe HTML.
-- Command and file-change approvals are shown as Telegram inline buttons when the current approval policy requires them.
+- Because the SDK run is in-process, a telecodex restart cannot resume a partially streamed Telegram turn; the topic is reset and the user is asked to resend.
+- Interactive terminal stdin bridging and native Codex approval UI are intentionally not part of the Telegram contract. For unattended remote work, use the topic's sandbox/approval preset deliberately.
