@@ -1,51 +1,148 @@
-import { randomBytes } from "node:crypto";
-import { loadConfig } from "../config.js";
+import { run } from "@grammyjs/runner";
 import { createBot } from "../bot/createBot.js";
 import { CodexAppServerClient } from "../codex/CodexAppServerClient.js";
 import { CodexGateway } from "../codex/CodexGateway.js";
-import { openDatabase } from "../store/db.js";
-import { SessionStore } from "../store/sessions.js";
+import { MaintenanceRunner } from "../maintenance/MaintenanceRunner.js";
+import { createRecoverPendingTurnDeliveriesTask } from "../maintenance/tasks/recoverPendingTurnDeliveries.js";
+import { createRefreshLiveSessionHeartbeatsTask } from "../maintenance/tasks/refreshLiveSessionHeartbeats.js";
+import { createReconcileTelegramTopicsTask } from "../maintenance/tasks/reconcileTelegramTopics.js";
+import { refreshAllTopicStatusPins } from "../telegram/topicStatus.js";
+import { bootstrapRuntime } from "./bootstrap.js";
+import { acquireInstanceLock, type InstanceLock } from "./instanceLock.js";
+import { createLogger, type Logger } from "./logger.js";
+
+let processHandlersInstalled = false;
 
 export async function startTelecodex(): Promise<void> {
-  const config = loadConfig();
-  const db = openDatabase(config.dbPath);
-  const sessions = new SessionStore(db);
-  const bootstrapCode = sessions.getAuthorizedUserId() == null ? generateBootstrapCode() : null;
-  const codexClient = new CodexAppServerClient({
-    codexBin: config.codexBin,
-    cwd: config.defaultCwd,
-  });
-  const gateway = new CodexGateway(codexClient);
-  const bot = createBot({ config, store: sessions, gateway, bootstrapCode });
-
-  process.once("SIGINT", () => {
-    bot.stop();
-    codexClient.stop();
-    process.exit(0);
-  });
-  process.once("SIGTERM", () => {
-    bot.stop();
-    codexClient.stop();
-    process.exit(0);
+  const logger = createLogger();
+  let instanceLock: InstanceLock | null = null;
+  installProcessErrorHandlers(logger);
+  logger.info("telecodex startup requested", {
+    pid: process.pid,
+    cwd: process.cwd(),
+    logFile: logger.filePath,
   });
 
-  await codexClient.start();
-  await bot.start({
-    onStart: (info) => {
-      console.log(`telecodex started as @${info.username}`);
-      console.log(`cwd: ${config.defaultCwd}`);
-      console.log(`codex: ${config.codexBin}`);
-      if (bootstrapCode) {
-        console.log("telegram admin is not bound yet");
-        console.log(`bootstrap code: ${bootstrapCode}`);
-        console.log("send this code to the bot in a private chat to claim the first admin account");
-      } else {
-        console.log(`authorized telegram user id: ${sessions.getAuthorizedUserId()}`);
-      }
-    },
-  });
+  try {
+    instanceLock = acquireInstanceLock({
+      logger: logger.child("instance-lock"),
+    });
+    logger.info("telecodex instance lock acquired", {
+      lockPath: instanceLock.path,
+      pid: process.pid,
+    });
+
+    const { config, store, projects, bootstrapCode, botUsername } = await bootstrapRuntime();
+    const codexClient = new CodexAppServerClient({
+      codexBin: config.codexBin,
+      cwd: config.defaultCwd,
+      logger: logger.child("codex-app-server"),
+    });
+    const gateway = new CodexGateway(codexClient);
+    const bot = createBot({
+      config,
+      store,
+      projects,
+      gateway,
+      bootstrapCode,
+      logger: logger.child("bot"),
+      onAdminBound: (userId) => {
+        logger.info("telegram admin bound", { userId });
+        console.log(`telegram admin bound: ${userId}`);
+        console.log("telecodex is now ready to accept commands from this Telegram account");
+      },
+    });
+    const maintenance = new MaintenanceRunner(
+      [
+        createRecoverPendingTurnDeliveriesTask({
+          bot,
+          store,
+          gateway,
+          logger: logger.child("maintenance/recover-turn-deliveries"),
+        }),
+        createRefreshLiveSessionHeartbeatsTask({
+          bot,
+          store,
+          logger: logger.child("maintenance/live-session-heartbeats"),
+        }),
+        createReconcileTelegramTopicsTask({
+          bot,
+          store,
+          gateway,
+          logger: logger.child("maintenance/reconcile-topics"),
+        }),
+      ],
+      {
+        logger: logger.child("maintenance"),
+      },
+    );
+    const botProfile = await bot.api.getMe();
+    if (!botProfile.can_read_all_group_messages) {
+      logger.warn("telegram bot privacy mode is enabled; plain topic messages will not reach telecodex", {
+        botUsername: botProfile.username ?? botUsername,
+      });
+      console.warn("warning: this bot cannot read all group messages yet");
+      console.warn("disable privacy mode in @BotFather with /setprivacy, then choose this bot and Disable");
+      console.warn("Telegram may take a few minutes to apply the change");
+    }
+
+    await codexClient.start();
+    const runner = run(bot);
+    void refreshAllTopicStatusPins(bot, store, logger.child("bot/topic-status-startup"));
+    maintenance.start();
+
+    const stopRuntime = (signal: NodeJS.Signals): void => {
+      logger.info("received shutdown signal", { signal });
+      maintenance.stop();
+      codexClient.stop();
+      runner.stop();
+      instanceLock?.release();
+      instanceLock = null;
+      logger.flush();
+      process.exit(0);
+    };
+
+    process.once("SIGINT", () => stopRuntime("SIGINT"));
+    process.once("SIGTERM", () => stopRuntime("SIGTERM"));
+
+    console.log(`telecodex started as @${botUsername ?? "unknown"}`);
+    console.log(`workspace: ${config.defaultCwd}`);
+    console.log(`codex: ${config.codexBin}`);
+    console.log(`logs: ${logger.filePath}`);
+    if (bootstrapCode) {
+      console.log("telegram admin is not bound yet");
+      console.log("waiting for admin binding from Telegram private chat...");
+      console.log("bootstrap code was shown during setup and copied to the clipboard when possible");
+    } else {
+      console.log(`authorized telegram user id: ${store.getAuthorizedUserId()}`);
+    }
+
+    logger.info("telecodex started", {
+      botUsername,
+      workspace: config.defaultCwd,
+      codexBin: config.codexBin,
+      bootstrapPending: bootstrapCode != null,
+      authorizedUserId: store.getAuthorizedUserId(),
+    });
+  } catch (error) {
+    instanceLock?.release();
+    logger.error("telecodex startup failed", error);
+    throw error;
+  }
 }
 
-function generateBootstrapCode(): string {
-  return `bind-${randomBytes(9).toString("base64url")}`;
+function installProcessErrorHandlers(logger: Logger): void {
+  if (processHandlersInstalled) return;
+  processHandlersInstalled = true;
+
+  process.on("unhandledRejection", (reason) => {
+    logger.error("unhandled rejection", reason);
+    logger.flush();
+  });
+
+  process.on("uncaughtException", (error) => {
+    logger.error("uncaught exception", error);
+    logger.flush();
+    process.exit(1);
+  });
 }

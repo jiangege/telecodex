@@ -8,10 +8,12 @@ import type {
   ServerNotification,
   ServerRequest,
 } from "../generated/codex-app-server/index.js";
+import type { Logger } from "../runtime/logger.js";
 
 type JsonRpcId = string | number;
 
 interface PendingRequest {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout;
@@ -42,6 +44,7 @@ export class CodexAppServerClient {
       codexBin: string;
       cwd: string;
       requestTimeoutMs?: number;
+      logger?: Logger;
     },
   ) {}
 
@@ -76,7 +79,7 @@ export class CodexAppServerClient {
     await this.start();
     const id = this.nextId++;
     const message = { method, id, params };
-    return this.sendRequest<T>(id, message, timeoutMs);
+    return this.sendRequest<T>(id, message, method, timeoutMs);
   }
 
   respond(id: JsonRpcId, result: unknown): void {
@@ -104,6 +107,9 @@ export class CodexAppServerClient {
   }
 
   stop(): void {
+    this.options.logger?.info("stopping codex app-server client", {
+      pendingRequests: this.pending.size,
+    });
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Codex app-server stopped"));
@@ -116,6 +122,10 @@ export class CodexAppServerClient {
   }
 
   private async startProcess(): Promise<void> {
+    this.options.logger?.info("starting codex app-server", {
+      codexBin: this.options.codexBin,
+      cwd: this.options.cwd,
+    });
     this.proc = spawn(this.options.codexBin, ["app-server"], {
       cwd: this.options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -126,10 +136,23 @@ export class CodexAppServerClient {
     });
 
     this.proc.stderr.on("data", (chunk: Buffer) => {
+      const output = chunk.toString("utf8").trimEnd();
+      if (output) {
+        this.options.logger?.warn("codex app-server stderr", { output });
+      }
       process.stderr.write(chunk);
     });
 
+    this.proc.on("error", (error) => {
+      this.options.logger?.error("failed to spawn codex app-server", error);
+    });
+
     this.proc.on("exit", (code, signal) => {
+      this.options.logger?.warn("codex app-server exited", {
+        code,
+        signal,
+        pendingRequests: this.pending.size,
+      });
       this.proc = null;
       this.rl?.close();
       this.rl = null;
@@ -145,17 +168,20 @@ export class CodexAppServerClient {
     this.rl.on("line", (line) => this.handleLine(line));
 
     await this.initialize();
+    this.options.logger?.info("codex app-server initialized");
   }
 
-  private sendRequest<T>(id: JsonRpcId, message: unknown, timeoutMs?: number): Promise<T> {
+  private sendRequest<T>(id: JsonRpcId, message: unknown, method: string, timeoutMs?: number): Promise<T> {
     const effectiveTimeout = timeoutMs ?? this.options.requestTimeoutMs ?? 120_000;
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Codex app-server request timed out: ${id}`));
+        this.options.logger?.error("codex app-server request timed out", { id, method, timeoutMs: effectiveTimeout });
+        reject(new Error(`Codex app-server request timed out: ${method} (${id})`));
       }, effectiveTimeout);
 
       this.pending.set(id, {
+        method,
         resolve: (value) => resolve(value as T),
         reject,
         timeout,
@@ -185,6 +211,7 @@ export class CodexAppServerClient {
     try {
       message = JSON.parse(line) as ServerMessage;
     } catch {
+      this.options.logger?.warn("received non-json line from codex app-server stdout", { line });
       process.stderr.write(`[codex-app-server stdout] ${line}\n`);
       return;
     }
@@ -212,6 +239,11 @@ export class CodexAppServerClient {
     this.pending.delete(response.id);
 
     if (response.error) {
+      this.options.logger?.error("codex app-server returned error", {
+        id: response.id,
+        method: pending.method,
+        error: response.error,
+      });
       pending.reject(new Error(response.error.message || `Codex app-server error ${response.error.code}`));
       return;
     }

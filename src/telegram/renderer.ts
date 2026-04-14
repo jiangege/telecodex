@@ -1,6 +1,6 @@
 import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import { splitTelegramText } from "./splitMessage.js";
+import { splitTelegramHtml, splitTelegramText } from "./splitMessage.js";
 
 const md = new MarkdownIt({
   html: false,
@@ -18,11 +18,15 @@ export function escapeHtml(value: string): string {
 export function renderMarkdownForTelegram(markdown: string): string[] {
   const tokens = md.parse(markdown, {});
   const html = renderTokens(tokens).replace(/\n{3,}/g, "\n\n").trim();
-  return splitTelegramText(html || escapeHtml(markdown || ""));
+  return splitTelegramHtml(html || escapeHtml(markdown || ""));
 }
 
 export function renderPlainForTelegram(text: string): string {
   return escapeHtml(text.trim() || " ");
+}
+
+export function renderPlainChunksForTelegram(text: string): string[] {
+  return splitTelegramText(renderPlainForTelegram(text));
 }
 
 function renderTokens(tokens: Token[]): string {

@@ -1,13 +1,27 @@
 import type { Bot } from "grammy";
-import { renderMarkdownForTelegram, renderPlainForTelegram } from "./renderer.js";
+import {
+  editHtmlMessage,
+  isMessageNotModifiedError,
+  replaceOrSendHtmlChunks,
+  sendHtmlMessage,
+  shouldFallbackToNewMessage,
+} from "./delivery.js";
+import type { Logger } from "../runtime/logger.js";
+import { renderMarkdownForTelegram, renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
 
 interface BufferState {
   chatId: number;
   messageThreadId: number | null;
   messageId: number;
   text: string;
+  progressLines: string[];
+  planText: string;
+  planDeltaText: string;
+  reasoningSummaryParts: string[];
+  toolOutputText: string;
   timer: NodeJS.Timeout | null;
   lastSentText: string;
+  queue: Promise<void>;
 }
 
 export class MessageBuffer {
@@ -16,32 +30,94 @@ export class MessageBuffer {
   constructor(
     private readonly bot: Bot,
     private readonly updateIntervalMs: number,
+    private readonly logger?: Logger,
   ) {}
 
   async create(key: string, input: { chatId: number; messageThreadId: number | null }): Promise<number> {
-    const message = await this.bot.api.sendMessage(input.chatId, "Codex 正在处理...", {
-      ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
-    });
+    const message = await sendHtmlMessage(
+      this.bot,
+      {
+        chatId: input.chatId,
+        messageThreadId: input.messageThreadId,
+        text: "Codex 正在处理...",
+      },
+      this.logger,
+    );
     this.states.set(key, {
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
       messageId: message.message_id,
       text: "",
+      progressLines: [],
+      planText: "",
+      planDeltaText: "",
+      reasoningSummaryParts: [],
+      toolOutputText: "",
       timer: null,
       lastSentText: "",
+      queue: Promise.resolve(),
     });
     return message.message_id;
+  }
+
+  has(key: string): boolean {
+    return this.states.has(key);
   }
 
   append(key: string, delta: string): void {
     const state = this.states.get(key);
     if (!state) return;
     state.text += delta;
-    if (state.timer) return;
-    state.timer = setTimeout(() => {
-      state.timer = null;
-      void this.flush(key);
-    }, this.updateIntervalMs);
+    this.scheduleFlush(key, state);
+  }
+
+  note(key: string, line: string): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    const normalized = line.trim();
+    if (!normalized) return;
+    const existingIndex = state.progressLines.findIndex((entry) => entry === normalized);
+    if (existingIndex >= 0) {
+      state.progressLines.splice(existingIndex, 1);
+    }
+    state.progressLines.push(normalized);
+    if (state.progressLines.length > 8) {
+      state.progressLines.splice(0, state.progressLines.length - 8);
+    }
+    this.scheduleFlush(key, state);
+  }
+
+  setPlan(key: string, text: string): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    state.planText = text.trim();
+    this.scheduleFlush(key, state);
+  }
+
+  appendPlan(key: string, delta: string): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    state.planDeltaText = truncateTail(`${state.planDeltaText}${delta}`, 1200);
+    this.scheduleFlush(key, state);
+  }
+
+  appendReasoningSummary(key: string, delta: string, summaryIndex: number): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    while (state.reasoningSummaryParts.length <= summaryIndex) {
+      state.reasoningSummaryParts.push("");
+    }
+    state.reasoningSummaryParts[summaryIndex] += delta;
+    this.scheduleFlush(key, state);
+  }
+
+  appendToolOutput(key: string, delta: string): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    const normalized = delta.replace(/\r/g, "");
+    if (!normalized.trim()) return;
+    state.toolOutputText = truncateTail(`${state.toolOutputText}${normalized}`, 2000);
+    this.scheduleFlush(key, state);
   }
 
   rename(from: string, to: string): void {
@@ -55,55 +131,148 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) clearTimeout(state.timer);
-    const text = finalMarkdown ?? state.text;
-    const chunks = renderMarkdownForTelegram(text);
-    const [first, ...rest] = chunks;
-    if (first) {
-      await this.safeEdit(state, first);
-    }
-    for (const chunk of rest) {
-      await this.bot.api.sendMessage(state.chatId, chunk, {
-        ...(state.messageThreadId == null ? {} : { message_thread_id: state.messageThreadId }),
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-      });
-    }
-    this.states.delete(key);
+    await this.enqueue(state, async () => {
+      const text = (finalMarkdown ?? state.text).trim();
+      const chunks = text
+        ? renderMarkdownForTelegram(text)
+        : renderPlainChunksForTelegram("Codex 已完成，但没有返回可发送的文本。");
+      await this.replaceWithChunks(state, chunks);
+      this.states.delete(key);
+    });
   }
 
   async fail(key: string, message: string): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) clearTimeout(state.timer);
-    await this.safeEdit(state, renderPlainForTelegram(`Codex 出错：${message}`));
-    this.states.delete(key);
+    await this.enqueue(state, async () => {
+      await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex 出错：${message}`));
+      this.states.delete(key);
+    });
   }
 
   private async flush(key: string): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
-    const text = renderPlainForTelegram(truncateForEdit(state.text));
-    if (text === state.lastSentText) return;
-    await this.safeEdit(state, text);
+    await this.enqueue(state, async () => {
+      const latest = this.states.get(key);
+      if (!latest) return;
+      const text = renderPlainForTelegram(truncateForEdit(composePendingText(latest)));
+      if (text === latest.lastSentText) return;
+      await this.safeEdit(latest, text);
+    });
+  }
+
+  private scheduleFlush(key: string, state: BufferState): void {
+    if (state.timer) return;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      void this.flush(key);
+    }, this.updateIntervalMs);
   }
 
   private async safeEdit(state: BufferState, text: string): Promise<void> {
     try {
-      await this.bot.api.editMessageText(state.chatId, state.messageId, text, {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-      });
+      await editHtmlMessage(this.bot, {
+        chatId: state.chatId,
+        messageId: state.messageId,
+        text,
+      }, this.logger);
       state.lastSentText = text;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes("message is not modified")) {
-        process.stderr.write(`[telegram edit failed] ${message}\n`);
+      if (isMessageNotModifiedError(error)) {
+        state.lastSentText = text;
+        return;
       }
+      if (shouldFallbackToNewMessage(error)) {
+        const message = await sendHtmlMessage(
+          this.bot,
+          {
+            chatId: state.chatId,
+            messageThreadId: state.messageThreadId,
+            text,
+          },
+          this.logger,
+        );
+        state.messageId = message.message_id;
+        state.lastSentText = text;
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger?.warn("telegram edit failed", {
+        message,
+        chatId: state.chatId,
+        messageThreadId: state.messageThreadId,
+        messageId: state.messageId,
+      });
+      process.stderr.write(`[telegram edit failed] ${message}\n`);
     }
+  }
+
+  private async replaceWithChunks(state: BufferState, chunks: string[]): Promise<void> {
+    const messageId = await replaceOrSendHtmlChunks(
+      this.bot,
+      {
+        chatId: state.chatId,
+        messageThreadId: state.messageThreadId,
+        messageId: state.messageId,
+        chunks,
+      },
+      this.logger,
+    );
+    if (messageId != null) {
+      state.messageId = messageId;
+    }
+    const [first] = chunks;
+    if (first) {
+      state.lastSentText = first;
+    }
+  }
+
+  private async enqueue(state: BufferState, work: () => Promise<void>): Promise<void> {
+    const run = state.queue.then(work, work);
+    state.queue = run.catch(() => undefined);
+    await run;
   }
 }
 
 function truncateForEdit(text: string): string {
   if (text.length <= 3800) return text || "Codex 正在处理...";
   return `${text.slice(0, 3800)}\n\n...`;
+}
+
+function composePendingText(state: BufferState): string {
+  const sections = ["Codex 正在处理..."];
+
+  if (state.planText) {
+    sections.push(`[计划]\n${state.planText}`);
+  } else if (state.planDeltaText.trim()) {
+    sections.push(`[计划]\n${state.planDeltaText.trim()}`);
+  }
+
+  const reasoningSummary = state.reasoningSummaryParts.map((part) => part.trim()).filter(Boolean).join("\n");
+  if (reasoningSummary) {
+    sections.push(`[思路摘要]\n${reasoningSummary}`);
+  }
+
+  if (state.progressLines.length > 0) {
+    sections.push(`[过程]\n${state.progressLines.join("\n")}`);
+  }
+
+  const toolOutput = state.toolOutputText.trim();
+  if (toolOutput) {
+    sections.push(`[工具输出]\n${toolOutput}`);
+  }
+
+  const replyDraft = state.text.trim();
+  if (replyDraft) {
+    sections.push(`[回复草稿]\n${replyDraft}`);
+  }
+
+  return sections.join("\n\n");
+}
+
+function truncateTail(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return text.slice(text.length - maxLength);
 }
