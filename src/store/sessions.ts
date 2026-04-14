@@ -82,6 +82,24 @@ export interface QueuedInput {
   updatedAt: string;
 }
 
+export type PendingInteractionKind =
+  | "approval"
+  | "permissions"
+  | "tool_user_input"
+  | "mcp_elicitation_form"
+  | "mcp_elicitation_url"
+  | "terminal_stdin";
+
+export interface PendingInteraction {
+  interactionId: string;
+  sessionKey: string;
+  kind: PendingInteractionKind;
+  requestJson: string;
+  messageId: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface SessionRow {
   session_key: string;
   chat_id: string;
@@ -128,6 +146,16 @@ interface QueuedInputRow {
   id: number;
   session_key: string;
   text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PendingInteractionRow {
+  interaction_id: string;
+  session_key: string;
+  kind: string;
+  request_json: string;
+  message_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -250,6 +278,8 @@ export class SessionStore {
   }
 
   remove(sessionKey: string): void {
+    this.db.prepare("DELETE FROM pending_interactions WHERE session_key = ?").run(sessionKey);
+    this.db.prepare("DELETE FROM queued_inputs WHERE session_key = ?").run(sessionKey);
     this.db.prepare("DELETE FROM sessions WHERE session_key = ?").run(sessionKey);
   }
 
@@ -316,8 +346,130 @@ export class SessionStore {
     return row ? mapQueuedInputRow(row) : null;
   }
 
+  listQueuedInputs(sessionKey: string, limit = 5): QueuedInput[] {
+    const rows = this.db
+      .prepare("SELECT * FROM queued_inputs WHERE session_key = ? ORDER BY id ASC LIMIT ?")
+      .all(sessionKey, limit) as unknown as QueuedInputRow[];
+    return rows.map(mapQueuedInputRow);
+  }
+
   removeQueuedInput(id: number): void {
     this.db.prepare("DELETE FROM queued_inputs WHERE id = ?").run(id);
+  }
+
+  removeQueuedInputForSession(sessionKey: string, id: number): boolean {
+    const result = this.db
+      .prepare("DELETE FROM queued_inputs WHERE session_key = ? AND id = ?")
+      .run(sessionKey, id) as { changes?: number };
+    return (result.changes ?? 0) > 0;
+  }
+
+  clearQueuedInputs(sessionKey: string): number {
+    const result = this.db.prepare("DELETE FROM queued_inputs WHERE session_key = ?").run(sessionKey) as {
+      changes?: number;
+    };
+    return result.changes ?? 0;
+  }
+
+  putPendingInteraction(input: {
+    interactionId: string;
+    sessionKey: string;
+    kind: PendingInteractionKind;
+    requestJson: string;
+    messageId?: number | null;
+  }): PendingInteraction {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO pending_interactions (
+          interaction_id, session_key, kind, request_json, message_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(interaction_id) DO UPDATE SET
+          session_key = excluded.session_key,
+          kind = excluded.kind,
+          request_json = excluded.request_json,
+          message_id = excluded.message_id,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        input.interactionId,
+        input.sessionKey,
+        input.kind,
+        input.requestJson,
+        input.messageId ?? null,
+        now,
+        now,
+      );
+    const interaction = this.getPendingInteraction(input.interactionId);
+    if (!interaction) throw new Error("Pending interaction upsert failed");
+    return interaction;
+  }
+
+  getPendingInteraction(interactionId: string): PendingInteraction | null {
+    const row = this.db
+      .prepare("SELECT * FROM pending_interactions WHERE interaction_id = ?")
+      .get(interactionId) as PendingInteractionRow | undefined;
+    return row ? mapPendingInteractionRow(row) : null;
+  }
+
+  getOldestPendingInteractionForSession(
+    sessionKey: string,
+    kinds?: PendingInteractionKind[],
+  ): PendingInteraction | null {
+    if (!kinds || kinds.length === 0) {
+      const row = this.db
+        .prepare("SELECT * FROM pending_interactions WHERE session_key = ? ORDER BY created_at ASC LIMIT 1")
+        .get(sessionKey) as PendingInteractionRow | undefined;
+      return row ? mapPendingInteractionRow(row) : null;
+    }
+    const placeholders = kinds.map(() => "?").join(", ");
+    const row = this.db
+      .prepare(
+        `SELECT * FROM pending_interactions
+         WHERE session_key = ? AND kind IN (${placeholders})
+         ORDER BY created_at ASC
+         LIMIT 1`,
+      )
+      .get(sessionKey, ...kinds) as PendingInteractionRow | undefined;
+    return row ? mapPendingInteractionRow(row) : null;
+  }
+
+  listPendingInteractionsForSession(sessionKey: string, limit = 20): PendingInteraction[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM pending_interactions
+         WHERE session_key = ?
+         ORDER BY created_at ASC
+         LIMIT ?`,
+      )
+      .all(sessionKey, limit) as unknown as PendingInteractionRow[];
+    return rows.map(mapPendingInteractionRow);
+  }
+
+  setPendingInteractionMessage(interactionId: string, messageId: number | null): void {
+    this.db
+      .prepare("UPDATE pending_interactions SET message_id = ?, updated_at = ? WHERE interaction_id = ?")
+      .run(messageId, new Date().toISOString(), interactionId);
+  }
+
+  removePendingInteraction(interactionId: string): void {
+    this.db.prepare("DELETE FROM pending_interactions WHERE interaction_id = ?").run(interactionId);
+  }
+
+  removePendingInteractionsForSession(sessionKey: string): void {
+    this.db.prepare("DELETE FROM pending_interactions WHERE session_key = ?").run(sessionKey);
+  }
+
+  removePendingInteractionsForSessionKinds(sessionKey: string, kinds: PendingInteractionKind[]): number {
+    if (kinds.length === 0) return 0;
+    const placeholders = kinds.map(() => "?").join(", ");
+    const result = this.db
+      .prepare(
+        `DELETE FROM pending_interactions
+         WHERE session_key = ? AND kind IN (${placeholders})`,
+      )
+      .run(sessionKey, ...kinds) as { changes?: number };
+    return result.changes ?? 0;
   }
 
   getTurnDeliveryStats(): TurnDeliveryStats {
@@ -657,6 +809,18 @@ function mapQueuedInputRow(row: QueuedInputRow): QueuedInput {
   };
 }
 
+function mapPendingInteractionRow(row: PendingInteractionRow): PendingInteraction {
+  return {
+    interactionId: row.interaction_id,
+    sessionKey: row.session_key,
+    kind: normalizePendingInteractionKind(row.kind),
+    requestJson: row.request_json,
+    messageId: row.message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function normalizeSandboxMode(row: SessionRow): SessionSandboxMode {
   if (row.sandbox_mode && isSessionSandboxMode(row.sandbox_mode)) {
     return row.sandbox_mode;
@@ -705,5 +869,19 @@ function normalizeTurnDeliveryStatus(value: string | null | undefined): TurnDeli
       return value;
     default:
       return "pending";
+  }
+}
+
+function normalizePendingInteractionKind(value: string | null | undefined): PendingInteractionKind {
+  switch (value) {
+    case "approval":
+    case "permissions":
+    case "tool_user_input":
+    case "mcp_elicitation_form":
+    case "mcp_elicitation_url":
+    case "terminal_stdin":
+      return value;
+    default:
+      return "approval";
   }
 }

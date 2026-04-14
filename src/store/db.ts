@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const LATEST_DB_SCHEMA_VERSION = 6;
+export const LATEST_DB_SCHEMA_VERSION = 7;
 
 export function openDatabase(dbPath: string): DatabaseSync {
   mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -91,6 +91,19 @@ const MIGRATIONS: Array<{ version: number; apply: (db: DatabaseSync) => void }> 
 
         CREATE INDEX IF NOT EXISTS queued_inputs_session_key_idx
           ON queued_inputs (session_key, id);
+
+        CREATE TABLE IF NOT EXISTS pending_interactions (
+          interaction_id TEXT PRIMARY KEY,
+          session_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          request_json TEXT NOT NULL,
+          message_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS pending_interactions_session_key_idx
+          ON pending_interactions (session_key, created_at);
       `);
     },
   },
@@ -265,6 +278,25 @@ const MIGRATIONS: Array<{ version: number; apply: (db: DatabaseSync) => void }> 
 
         CREATE INDEX IF NOT EXISTS queued_inputs_session_key_idx
           ON queued_inputs (session_key, id)
+      `);
+    },
+  },
+  {
+    version: 7,
+    apply(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_interactions (
+          interaction_id TEXT PRIMARY KEY,
+          session_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          request_json TEXT NOT NULL,
+          message_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS pending_interactions_session_key_idx
+          ON pending_interactions (session_key, created_at)
       `);
     },
   },

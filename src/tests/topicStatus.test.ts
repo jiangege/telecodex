@@ -28,6 +28,7 @@ test("updateTopicStatusPin shows running state and active turn", async () => {
     const text = sent.at(-1)?.text ?? "";
     assert.match(text, /state: <code>running<\/code>/);
     assert.match(text, /active turn: <code>turn-21<\/code>/);
+    assert.match(text, /input: <code>queue<\/code>/);
   } finally {
     cleanup();
   }

@@ -16,6 +16,7 @@ import {
   syncSessionFromCodexRuntime,
   turnBufferKey,
 } from "./sessionFlow.js";
+import { getSessionInputState } from "./inputTarget.js";
 import { backfillTurnDeliveryFromSession, finalizeTurnResult } from "./turnDeliveryService.js";
 
 export interface HandleUserTextResult {
@@ -43,8 +44,10 @@ export async function handleUserText(input: {
         consumed: false,
       };
     }
+    const inputState = getSessionInputState(store, effectiveSession);
     const queued = store.enqueueInput(effectiveSession.sessionKey, text);
     const queueDepth = store.getQueuedInputCount(effectiveSession.sessionKey);
+    await refreshTopicStatusPin(bot, store, effectiveSession, logger);
     await sendPlainChunks(
       bot,
       {
@@ -52,6 +55,7 @@ export async function handleUserText(input: {
         messageThreadId: numericMessageThreadId(effectiveSession),
         text: [
           `当前 Codex 任务仍在${describeBusyStatus(effectiveSession.runtimeStatus)}，已把你的消息加入队列。`,
+          `input target: ${inputState.summary}`,
           `queue position: ${queueDepth}`,
           `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
           "当前 turn 结束后会自动继续处理。",
@@ -99,6 +103,7 @@ export async function handleUserText(input: {
       },
       logger,
     });
+    await notifyInputStartFailure(store, bot, effectiveSession, error, logger);
     return {
       status: "failed",
       consumed: false,
@@ -234,6 +239,45 @@ export async function handleUserText(input: {
       status: "failed",
       consumed: true,
     };
+  }
+}
+
+async function notifyInputStartFailure(
+  store: SessionStore,
+  bot: Bot,
+  session: TelegramSession,
+  error: unknown,
+  logger?: Logger,
+): Promise<void> {
+  const authorizedUserId = store.getAuthorizedUserId();
+  if (authorizedUserId == null) return;
+
+  const lines = [
+    "telecodex 无法创建本轮输出占位消息，输入未开始处理。",
+    `session: ${session.sessionKey}`,
+    `thread: ${session.codexThreadId ?? "待创建"}`,
+    `chat: ${session.chatId}`,
+    `topic: ${session.messageThreadId ?? "private"}`,
+    `cwd: ${session.cwd}`,
+    `error: ${error instanceof Error ? error.message : String(error)}`,
+  ];
+
+  try {
+    await sendPlainChunks(
+      bot,
+      {
+        chatId: authorizedUserId,
+        messageThreadId: null,
+        text: lines.join("\n"),
+      },
+      logger,
+    );
+  } catch (notifyError) {
+    logger?.warn("failed to notify authorized telegram user about input start failure", {
+      ...sessionLogFields(session),
+      alertUserId: authorizedUserId,
+      error: notifyError,
+    });
   }
 }
 

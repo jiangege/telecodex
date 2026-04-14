@@ -34,7 +34,7 @@ export function createBot(input: {
   const { config, store, projects, gateway, bootstrapCode, logger, onAdminBound } = input;
   const bot = new Bot(config.telegramBotToken);
   const buffers = new MessageBuffer(bot, config.updateIntervalMs, logger?.child("message-buffer"));
-  const approvals = new ApprovalManager(bot, gateway, store);
+  const approvals = new ApprovalManager(bot, gateway, store, logger?.child("approvals"));
 
   bot.use(
     authMiddleware({

@@ -4,6 +4,7 @@ import type { Logger } from "../runtime/logger.js";
 import { formatSessionRuntimeStatus } from "../runtime/sessionRuntime.js";
 import type { SessionStore, TelegramSession } from "../store/sessions.js";
 import { numericChatId, numericMessageThreadId } from "../bot/session.js";
+import { formatActiveBlockerSummary, formatInputTargetForStatus, getSessionInputState } from "../bot/inputTarget.js";
 import {
   editHtmlMessage,
   isMessageNotModifiedError,
@@ -32,7 +33,7 @@ export async function updateTopicStatusPin(
   }
 
   const chatId = numericChatId(latest);
-  const text = formatTopicStatusText(latest, store.getQueuedInputCount(latest.sessionKey));
+  const text = formatTopicStatusText(store, latest, store.getQueuedInputCount(latest.sessionKey));
   let messageId = latest.pinnedStatusMessageId;
 
   try {
@@ -94,14 +95,19 @@ export async function updateTopicStatusPin(
   return store.get(latest.sessionKey) ?? latest;
 }
 
-function formatTopicStatusText(session: TelegramSession, queueDepth: number): string {
+function formatTopicStatusText(store: SessionStore, session: TelegramSession, queueDepth: number): string {
   const detail = session.runtimeStatusDetail?.trim();
+  const inputState = getSessionInputState(store, session);
   return [
     "<b>Codex Thread</b>",
     formatCodeLine("thread", session.codexThreadId ?? "待创建"),
     formatCodeLine("state", describeSessionState(session)),
     ...(detail ? [formatCodeLine("detail", detail)] : []),
     formatCodeLine("active turn", session.activeTurnId ?? "无"),
+    formatCodeLine("input", formatInputTargetForStatus(inputState)),
+    formatCodeLine("input summary", inputState.summary),
+    formatCodeLine("blocker", formatActiveBlockerSummary(inputState)),
+    formatCodeLine("pending blockers", String(inputState.pendingBlockers)),
     formatCodeLine("queue", String(queueDepth)),
     formatCodeLine("model", session.model),
     formatCodeLine("effort", describeReasoningEffort(session)),

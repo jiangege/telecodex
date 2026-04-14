@@ -1,153 +1,182 @@
 import crypto from "node:crypto";
-import { InlineKeyboard, type Bot, type Context } from "grammy";
+import type { Bot, Context } from "grammy";
 import type { ServerRequest } from "../generated/codex-app-server/index.js";
-import type { CommandExecutionApprovalDecision } from "../generated/codex-app-server/v2/CommandExecutionApprovalDecision.js";
-import type { FileChangeApprovalDecision } from "../generated/codex-app-server/v2/FileChangeApprovalDecision.js";
-import type { CodexGateway } from "./CodexGateway.js";
-import { SessionStore } from "../store/sessions.js";
+import { applySessionRuntimeEvent } from "../runtime/sessionRuntime.js";
+import type { Logger } from "../runtime/logger.js";
+import { makeSessionKey, type PendingInteraction, type SessionStore } from "../store/sessions.js";
 import { escapeHtml } from "../telegram/renderer.js";
-
-type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
-
-interface PendingApproval {
-  request: ServerRequest;
-  chatId: number;
-  messageId: number;
-}
+import type { CodexGateway } from "./CodexGateway.js";
+import { buildPresentation } from "./approvalPresentation.js";
+import {
+  isSupportedServerRequest,
+  parseCallbackAction,
+  parseStoredRequest,
+  requestThreadId,
+  type SupportedServerRequest,
+} from "./approvalProtocol.js";
+import { parseInteractionTextReply, REJECT_RESPONSE, resolveCallbackResult } from "./approvalResolution.js";
 
 export class ApprovalManager {
-  private readonly pending = new Map<string, PendingApproval>();
-
   constructor(
     private readonly bot: Bot,
     private readonly gateway: CodexGateway,
     private readonly sessions: SessionStore,
+    private readonly logger?: Logger,
   ) {}
 
   async handleServerRequest(request: ServerRequest): Promise<void> {
-    if (
-      request.method !== "item/commandExecution/requestApproval" &&
-      request.method !== "item/fileChange/requestApproval"
-    ) {
+    if (!isSupportedServerRequest(request)) {
       this.gateway.reject(request.id, `telecodex does not support server request: ${request.method}`);
       return;
     }
 
-    const session = this.sessions.getByThreadId(request.params.threadId);
+    const threadId = requestThreadId(request);
+    const session = threadId ? this.sessions.getByThreadId(threadId) : null;
     if (!session) {
       this.gateway.reject(request.id, "No Telegram session is attached to this Codex thread");
       return;
     }
 
-    const approvalId = crypto.randomBytes(4).toString("hex");
-    const keyboard = buildKeyboard(approvalId, availableDecisions(request));
-    const text = formatApprovalText(request);
-    const message = await this.bot.api.sendMessage(Number(session.chatId), text, {
-      ...(session.messageThreadId == null ? {} : { message_thread_id: Number(session.messageThreadId) }),
-      parse_mode: "HTML",
-      reply_markup: keyboard,
+    const interactionId = crypto.randomBytes(6).toString("hex");
+    const presentation = buildPresentation(request, interactionId);
+
+    await applySessionRuntimeEvent({
+      bot: this.bot,
+      store: this.sessions,
+      sessionKey: session.sessionKey,
+      event: presentation.runtimeEvent,
+      logger: this.logger,
     });
 
-    this.pending.set(approvalId, {
-      request,
-      chatId: Number(session.chatId),
-      messageId: message.message_id,
+    this.sessions.putPendingInteraction({
+      interactionId,
+      sessionKey: session.sessionKey,
+      kind: presentation.kind,
+      requestJson: JSON.stringify(request),
+      messageId: null,
     });
+
+    try {
+      const message = await this.bot.api.sendMessage(Number(session.chatId), presentation.text, {
+        ...(session.messageThreadId == null ? {} : { message_thread_id: Number(session.messageThreadId) }),
+        parse_mode: "HTML",
+        ...(presentation.keyboard ? { reply_markup: presentation.keyboard } : {}),
+      });
+      this.sessions.setPendingInteractionMessage(interactionId, message.message_id);
+    } catch (error) {
+      this.sessions.removePendingInteraction(interactionId);
+      this.logger?.error("failed to deliver telegram interaction prompt", {
+        sessionKey: session.sessionKey,
+        threadId,
+        requestId: request.id,
+        method: request.method,
+        error,
+      });
+      this.gateway.reject(request.id, "Failed to deliver Telegram interaction prompt");
+    }
   }
 
   async handleCallback(ctx: Context): Promise<boolean> {
     const data = ctx.callbackQuery?.data;
-    if (!data?.startsWith("approval:")) return false;
+    if (!data) return false;
 
-    const [, approvalId, decision] = data.split(":") as [string, string, ApprovalDecision | undefined];
-    const pending = this.pending.get(approvalId);
-    if (!pending || !decision) {
-      await ctx.answerCallbackQuery({ text: "这个审批已经失效" });
+    const action = parseCallbackAction(data);
+    if (!action) return false;
+
+    const interaction = this.sessions.getPendingInteraction(action.interactionId);
+    if (!interaction) {
+      await ctx.answerCallbackQuery({ text: "这个交互已经失效" });
       return true;
     }
 
-    this.pending.delete(approvalId);
-    this.respond(pending.request, decision);
-    await ctx.answerCallbackQuery({ text: approvalLabel(decision) });
-    await this.bot.api.editMessageText(
-      pending.chatId,
-      pending.messageId,
-      `${formatApprovalText(pending.request)}\n\n<b>已选择：</b>${escapeHtml(approvalLabel(decision))}`,
-      {
-        parse_mode: "HTML",
-      },
-    );
+    const request = parseStoredRequest(interaction);
+    if (!request) {
+      this.sessions.removePendingInteraction(interaction.interactionId);
+      await ctx.answerCallbackQuery({ text: "这个交互已经失效" });
+      return true;
+    }
+
+    const result = resolveCallbackResult(interaction, request, action);
+    if (!result.ok) {
+      await ctx.answerCallbackQuery({ text: result.message });
+      return true;
+    }
+
+    this.finishInteraction(interaction, request, result.appendedText, result.response);
+    await ctx.answerCallbackQuery({ text: result.answerText });
     return true;
   }
 
-  private respond(request: ServerRequest, decision: ApprovalDecision): void {
-    if (request.method === "item/commandExecution/requestApproval") {
-      this.gateway.respond(request.id, {
-        decision: decision as CommandExecutionApprovalDecision,
-      });
-      return;
+  async handleTextReply(ctx: Context): Promise<boolean> {
+    const text = ctx.message?.text?.trim();
+    const chatId = ctx.chat?.id;
+    const messageThreadId = ctx.message?.message_thread_id ?? null;
+    if (!text || chatId == null || messageThreadId == null) return false;
+
+    const sessionKey = makeSessionKey(chatId, messageThreadId);
+    const interaction = this.sessions.getOldestPendingInteractionForSession(sessionKey, [
+      "tool_user_input",
+      "mcp_elicitation_form",
+    ]);
+    if (!interaction) return false;
+
+    const request = parseStoredRequest(interaction);
+    if (!request) {
+      this.sessions.removePendingInteraction(interaction.interactionId);
+      await ctx.reply("这个待处理交互已经失效，请重新触发。");
+      return true;
     }
-    if (request.method === "item/fileChange/requestApproval") {
-      this.gateway.respond(request.id, {
-        decision: decision as FileChangeApprovalDecision,
-      });
-      return;
+
+    const result = parseInteractionTextReply(interaction, request, text);
+    if (!result.ok) {
+      await ctx.reply(result.message);
+      return true;
+    }
+
+    this.finishInteraction(interaction, request, result.appendedText, result.response);
+    await ctx.reply("已提交给 Codex，等待继续处理。");
+    return true;
+  }
+
+  private finishInteraction(
+    interaction: PendingInteraction,
+    request: SupportedServerRequest,
+    appendedText: string,
+    response: unknown,
+  ): void {
+    try {
+      if (response === REJECT_RESPONSE) {
+        this.gateway.reject(request.id, appendedText);
+      } else {
+        this.gateway.respond(request.id, response);
+      }
+    } finally {
+      this.sessions.removePendingInteraction(interaction.interactionId);
+      void this.appendInteractionResult(interaction, request, appendedText);
     }
   }
-}
 
-function buildKeyboard(approvalId: string, decisions: ApprovalDecision[]): InlineKeyboard {
-  const keyboard = new InlineKeyboard();
-  for (const decision of decisions) {
-    keyboard.text(approvalLabel(decision), `approval:${approvalId}:${decision}`);
+  private async appendInteractionResult(
+    interaction: PendingInteraction,
+    request: SupportedServerRequest,
+    appendedText: string,
+  ): Promise<void> {
+    const session = this.sessions.get(interaction.sessionKey);
+    if (!session || interaction.messageId == null) return;
+
+    try {
+      await this.bot.api.editMessageText(
+        Number(session.chatId),
+        interaction.messageId,
+        `${buildPresentation(request, interaction.interactionId).text}\n\n<b>已处理：</b>${escapeHtml(appendedText)}`,
+        { parse_mode: "HTML" },
+      );
+    } catch (error) {
+      this.logger?.debug("failed to append interaction result to telegram prompt", {
+        sessionKey: interaction.sessionKey,
+        interactionId: interaction.interactionId,
+        error,
+      });
+    }
   }
-  return keyboard;
-}
-
-function availableDecisions(request: ServerRequest): ApprovalDecision[] {
-  if (request.method === "item/fileChange/requestApproval") {
-    return ["accept", "acceptForSession", "decline", "cancel"];
-  }
-
-  if (request.method !== "item/commandExecution/requestApproval") {
-    return ["decline"];
-  }
-
-  const available = request.params.availableDecisions;
-  if (!available) return ["accept", "acceptForSession", "decline", "cancel"];
-
-  const stringDecisions = new Set(available.filter((decision): decision is ApprovalDecision => typeof decision === "string"));
-  const ordered: ApprovalDecision[] = ["accept", "acceptForSession", "decline", "cancel"];
-  const filtered = ordered.filter((decision) => stringDecisions.has(decision));
-  return filtered.length > 0 ? filtered : ["decline"];
-}
-
-function approvalLabel(decision: ApprovalDecision): string {
-  switch (decision) {
-    case "accept":
-      return "允许一次";
-    case "acceptForSession":
-      return "本会话允许";
-    case "decline":
-      return "拒绝";
-    case "cancel":
-      return "取消";
-  }
-}
-
-function formatApprovalText(request: ServerRequest): string {
-  if (request.method === "item/commandExecution/requestApproval") {
-    const command = request.params.command ?? "(network or command approval)";
-    const cwd = request.params.cwd ? `\n<b>CWD:</b> <code>${escapeHtml(request.params.cwd)}</code>` : "";
-    const reason = request.params.reason ? `\n<b>原因:</b> ${escapeHtml(request.params.reason)}` : "";
-    return `<b>Codex 请求执行命令</b>${cwd}${reason}\n\n<pre><code>${escapeHtml(command)}</code></pre>`;
-  }
-
-  if (request.method === "item/fileChange/requestApproval") {
-    const root = request.params.grantRoot ? `\n<b>写入范围:</b> <code>${escapeHtml(request.params.grantRoot)}</code>` : "";
-    const reason = request.params.reason ? `\n<b>原因:</b> ${escapeHtml(request.params.reason)}` : "";
-    return `<b>Codex 请求修改文件</b>${root}${reason}`;
-  }
-
-  return `<b>Codex 请求审批</b>\n<code>${escapeHtml(request.method)}</code>`;
 }

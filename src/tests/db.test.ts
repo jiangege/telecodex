@@ -64,6 +64,9 @@ test("openDatabase migrates a legacy database to the latest schema version", () 
     const deliveryColumns = new Set(
       (db.prepare("PRAGMA table_info(turn_deliveries)").all() as Array<{ name: string }>).map((column) => column.name),
     );
+    const pendingInteractionColumns = new Set(
+      (db.prepare("PRAGMA table_info(pending_interactions)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
 
     assert.equal(sessionColumns.has("sandbox_mode"), true);
     assert.equal(sessionColumns.has("approval_policy"), true);
@@ -73,6 +76,8 @@ test("openDatabase migrates a legacy database to the latest schema version", () 
     assert.equal(deliveryColumns.has("status"), true);
     assert.equal(deliveryColumns.has("next_attempt_at"), true);
     assert.equal(deliveryColumns.has("alerted_at"), true);
+    assert.equal(pendingInteractionColumns.has("interaction_id"), true);
+    assert.equal(pendingInteractionColumns.has("request_json"), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

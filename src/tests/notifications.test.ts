@@ -249,7 +249,7 @@ test("recoverPendingTurnDeliveries replays a completed turn from persisted deliv
 
 test("handleUserText queues follow-up input while session is busy", async () => {
   const { store, cleanup } = createTestSessionStore();
-  const { bot, sent } = createFakeBot();
+  const { bot, sent, edited } = createFakeBot();
   try {
     const session = store.getOrCreate({
       sessionKey: "-100:160",
@@ -260,6 +260,7 @@ test("handleUserText queues follow-up input while session is busy", async () => 
       defaultModel: "gpt-5.4",
     });
     store.setThread(session.sessionKey, "thread-160");
+    store.setPinnedStatusMessage(session.sessionKey, 1600);
     store.setRuntimeState(session.sessionKey, {
       status: "running",
       detail: null,
@@ -280,6 +281,48 @@ test("handleUserText queues follow-up input while session is busy", async () => 
     assert.equal(store.getQueuedInputCount(session.sessionKey), 1);
     assert.match(sent.at(-1)?.text ?? "", /已把你的消息加入队列/);
     assert.match(sent.at(-1)?.text ?? "", /queue position: 1/);
+    assert.match(edited.at(-1)?.text ?? "", /queue: <code>1<\/code>/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("handleUserText alerts the authorized user when output placeholder creation fails", async () => {
+  const { store, cleanup } = createTestSessionStore();
+  const { bot, api, sent } = createFakeBot();
+  try {
+    store.claimAuthorizedUserId(424242);
+    const session = store.getOrCreate({
+      sessionKey: "-100:161",
+      chatId: "-100",
+      messageThreadId: "161",
+      telegramTopicName: "demo",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+
+    api.sendMessage = async (chatId) => {
+      if (chatId === -100) {
+        throw new Error("telegram send failed");
+      }
+      sent.push({ chatId, text: "alerted", messageThreadId: null });
+      return { message_id: 999 };
+    };
+
+    const result = await handleUserText({
+      text: "hello",
+      session,
+      store,
+      gateway: {} as never,
+      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      bot,
+      logger: createNoopLogger(),
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.consumed, false);
+    const alert = sent.find((message) => message.chatId === 424242);
+    assert.ok(alert);
   } finally {
     cleanup();
   }

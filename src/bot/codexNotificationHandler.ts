@@ -7,7 +7,7 @@ import { applySessionRuntimeEvent, runtimeEventFromTurn } from "../runtime/sessi
 import type { SessionStore, TelegramSession } from "../store/sessions.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { deleteTelegramTopic, sendCleanupNoticeToGeneral } from "../telegram/topicCleanup.js";
-import { retryTelegramCall } from "../telegram/delivery.js";
+import { retryTelegramCall, sendPlainChunks } from "../telegram/delivery.js";
 import {
   formatCodexErrorDetail,
   formatCompletedItemNote,
@@ -24,6 +24,7 @@ import { numericChatId, numericMessageThreadId } from "./session.js";
 import { isIgnoredCodexNotificationMethod } from "./codexNotificationPolicy.js";
 import { processNextQueuedInputForSession } from "./inputService.js";
 import { finalizeTurnResult, hydrateTurn } from "./turnDeliveryService.js";
+import { clearPendingTerminalInteraction, recordTerminalInteraction } from "./terminalBridge.js";
 
 export async function handleCodexNotification(
   event: ServerNotification,
@@ -88,6 +89,44 @@ export async function handleCodexNotification(
 
   if (event.method === "item/commandExecution/outputDelta") {
     buffers.appendToolOutput(resolveTurnBufferKey(buffers, event.params.threadId, event.params.turnId), event.params.delta);
+    return;
+  }
+
+  if (event.method === "item/commandExecution/terminalInteraction") {
+    const session = store.getByThreadId(event.params.threadId);
+    if (session) {
+      const terminalState = recordTerminalInteraction(store, session.sessionKey, event.params);
+      await applySessionRuntimeEvent({
+        bot,
+        store,
+        sessionKey: session.sessionKey,
+        event: {
+          type: "turn.waitingInput",
+          turnId: event.params.turnId,
+          detail: `terminal: ${truncateSingleLine(event.params.stdin, 80)}`,
+        },
+        logger,
+      });
+      if (terminalState !== "unchanged") {
+        await sendPlainChunks(
+          bot,
+          {
+            chatId: numericChatId(session),
+            messageThreadId: numericMessageThreadId(session),
+            text: [
+              "终端正在等待输入。",
+              "下一条普通文本会写入 stdin。",
+              "用 /tty 查看或控制这个终端进程。",
+            ].join("\n"),
+          },
+          logger,
+        );
+      }
+    }
+    buffers.note(
+      resolveTurnBufferKey(buffers, event.params.threadId, event.params.turnId),
+      `终端交互: ${truncateSingleLine(event.params.stdin, 120)}`,
+    );
     return;
   }
 
@@ -239,6 +278,12 @@ export async function handleCodexNotification(
       await buffers.complete(resolveTurnBufferKey(buffers, event.params.threadId, event.params.turnId), item.text);
       return;
     }
+    if (item.type === "commandExecution") {
+      const session = store.getByThreadId(event.params.threadId);
+      if (session) {
+        clearPendingTerminalInteraction(store, session.sessionKey, item.processId);
+      }
+    }
     const note = formatCompletedItemNote(item);
     if (note) {
       buffers.note(resolveTurnBufferKey(buffers, event.params.threadId, event.params.turnId), note);
@@ -273,6 +318,7 @@ export async function handleCodexNotification(
       }
     }
     if (session) {
+      clearPendingTerminalInteraction(store, session.sessionKey);
       store.setOutputMessage(session.sessionKey, null);
       await applySessionRuntimeEvent({
         bot,
@@ -320,6 +366,7 @@ export async function handleCodexNotification(
         }
       }
       if (session) {
+        clearPendingTerminalInteraction(store, session.sessionKey);
         store.setOutputMessage(session.sessionKey, null);
         await applySessionRuntimeEvent({
           bot,

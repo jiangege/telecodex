@@ -1,6 +1,8 @@
 import type { ServerNotification, ServerRequest } from "../generated/codex-app-server/index.js";
 import type { GetAccountResponse } from "../generated/codex-app-server/v2/GetAccountResponse.js";
 import type { GetAccountRateLimitsResponse } from "../generated/codex-app-server/v2/GetAccountRateLimitsResponse.js";
+import type { CommandExecTerminateResponse } from "../generated/codex-app-server/v2/CommandExecTerminateResponse.js";
+import type { CommandExecWriteResponse } from "../generated/codex-app-server/v2/CommandExecWriteResponse.js";
 import type { SandboxPolicy } from "../generated/codex-app-server/v2/SandboxPolicy.js";
 import type { Thread } from "../generated/codex-app-server/v2/Thread.js";
 import type { ThreadListResponse } from "../generated/codex-app-server/v2/ThreadListResponse.js";
@@ -105,6 +107,29 @@ export class CodexGateway {
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     await this.client.request("turn/interrupt", { threadId, turnId }, 30_000);
+  }
+
+  async writeTerminalInput(processId: string, input: { text?: string; closeStdin?: boolean }): Promise<void> {
+    const deltaBase64 = input.text == null ? null : Buffer.from(input.text, "utf8").toString("base64");
+    await this.client.request<CommandExecWriteResponse>(
+      "command/exec/write",
+      {
+        processId,
+        ...(deltaBase64 == null ? {} : { deltaBase64 }),
+        ...(input.closeStdin ? { closeStdin: true } : {}),
+      },
+      30_000,
+    );
+  }
+
+  async terminateTerminalProcess(processId: string): Promise<void> {
+    await this.client.request<CommandExecTerminateResponse>(
+      "command/exec/terminate",
+      {
+        processId,
+      },
+      30_000,
+    );
   }
 
   async listThreads(input?: {
