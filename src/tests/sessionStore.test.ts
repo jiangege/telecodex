@@ -105,7 +105,6 @@ test("reloading the file-backed session store keeps durable topic state but clea
       status: "running",
       detail: "busy",
       updatedAt: new Date().toISOString(),
-      activeTurnId: "turn-80",
     });
     firstStore.setOutputMessage(session.sessionKey, 999);
     firstStore.enqueueInput(session.sessionKey, "queued before restart");
@@ -115,7 +114,6 @@ test("reloading the file-backed session store keeps durable topic state but clea
     const reloaded = secondStore.get(session.sessionKey);
     assert.equal(reloaded?.codexThreadId, "thread-80");
     assert.equal(reloaded?.runtimeStatus, "idle");
-    assert.equal(reloaded?.activeTurnId, null);
     assert.equal(reloaded?.outputMessageId, null);
     assert.equal(secondStore.getQueuedInputCount(session.sessionKey), 0);
   } finally {

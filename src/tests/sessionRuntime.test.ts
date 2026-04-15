@@ -17,10 +17,8 @@ test("reduceSessionRuntimeState moves SDK-backed sessions through active and ter
 
     const running = reduceSessionRuntimeState(session, {
       type: "turn.started",
-      turnId: "turn-31",
     });
     assert.equal(running.status, "running");
-    assert.equal(running.activeTurnId, "turn-31");
 
     const done = reduceSessionRuntimeState(
       {
@@ -28,15 +26,12 @@ test("reduceSessionRuntimeState moves SDK-backed sessions through active and ter
         runtimeStatus: running.status,
         runtimeStatusDetail: running.detail,
         runtimeStatusUpdatedAt: running.updatedAt,
-        activeTurnId: running.activeTurnId,
       },
       {
         type: "turn.completed",
-        turnId: "turn-31",
       },
     );
     assert.equal(done.status, "idle");
-    assert.equal(done.activeTurnId, null);
   } finally {
     cleanup();
   }

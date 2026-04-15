@@ -83,7 +83,7 @@ export async function handleUserInput(input: {
         messageThreadId: numericMessageThreadId(session),
       },
       [
-        `The current Codex task is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
+        `Codex is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
         `queue position: ${queueDepth}`,
         `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
         "It will be processed automatically after the current run finishes.",
@@ -102,7 +102,7 @@ export async function handleUserInput(input: {
     sessionKey: session.sessionKey,
     event: {
       type: "turn.preparing",
-      detail: "starting codex sdk run",
+      detail: "waiting for first Codex SDK event",
     },
     logger,
   });
@@ -133,17 +133,6 @@ export async function handleUserInput(input: {
   }
 
   store.setOutputMessage(session.sessionKey, outputMessageId);
-  const turnId = createLocalTurnId();
-  await applySessionRuntimeEvent({
-    bot,
-    store,
-    sessionKey: session.sessionKey,
-    event: {
-      type: "turn.started",
-      turnId,
-    },
-    logger,
-  });
 
   void runSessionPrompt({
     sessionKey: session.sessionKey,
@@ -152,7 +141,6 @@ export async function handleUserInput(input: {
     codex,
     buffers,
     bot,
-    turnId,
     bufferKey,
     ...(logger ? { logger } : {}),
   });
@@ -181,7 +169,6 @@ export async function refreshSessionIfActiveTurnIsStale(
     sessionKey: latest.sessionKey,
     event: {
       type: "turn.failed",
-      turnId: latest.activeTurnId,
       message: "The previous run was lost. Send the message again.",
     },
     logger,
@@ -270,13 +257,16 @@ async function runSessionPrompt(input: {
   codex: CodexSdkRuntime;
   buffers: MessageBuffer;
   bot: Bot;
-  turnId: string;
   bufferKey: string;
   logger?: Logger;
 }): Promise<void> {
-  const { sessionKey, prompt, store, codex, buffers, bot, turnId, bufferKey, logger } = input;
+  const { sessionKey, prompt, store, codex, buffers, bot, bufferKey, logger } = input;
   const session = store.get(sessionKey);
   if (!session) return;
+
+  logger?.info("starting codex sdk run", {
+    ...sessionLogFields(session),
+  });
 
   try {
     const result = await codex.run({
@@ -298,8 +288,19 @@ async function runSessionPrompt(input: {
       callbacks: {
         onThreadStarted: async (threadId) => {
           store.bindThread(sessionKey, threadId);
+          logger?.info("codex sdk thread started", {
+            sessionKey,
+            threadId,
+          });
         },
         onEvent: async (event) => {
+          await applyRuntimeStateForSdkEvent({
+            event,
+            sessionKey,
+            store,
+            bot,
+            logger,
+          });
           await projectEventToTelegramBuffer(buffers, bufferKey, event);
         },
       },
@@ -315,12 +316,15 @@ async function runSessionPrompt(input: {
         sessionKey,
         event: {
           type: "turn.completed",
-          turnId,
         },
         logger,
       });
     }
 
+    logger?.info("codex sdk run completed", {
+      sessionKey,
+      threadId: result.threadId,
+    });
     await buffers.complete(bufferKey, result.finalResponse || undefined);
   } catch (error) {
     const latest = store.get(sessionKey);
@@ -332,18 +336,20 @@ async function runSessionPrompt(input: {
         sessionKey,
         event: isAbortError(error)
           ? {
-              type: "turn.interrupted",
-              turnId,
-            }
+            type: "turn.interrupted",
+          }
           : {
-              type: "turn.failed",
-              turnId,
-              message: error instanceof Error ? error.message : String(error),
-            },
+            type: "turn.failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
         logger,
       });
     }
 
+    logger?.warn("codex sdk run failed", {
+      sessionKey,
+      error,
+    });
     if (isAbortError(error)) {
       await buffers.fail(bufferKey, "Current run interrupted.");
     } else {
@@ -352,6 +358,34 @@ async function runSessionPrompt(input: {
   } finally {
     await processNextQueuedInputForSession(sessionKey, store, codex, buffers, bot, logger);
   }
+}
+
+async function applyRuntimeStateForSdkEvent(input: {
+  event: ThreadEvent;
+  sessionKey: string;
+  store: SessionStore;
+  bot: Bot;
+  logger: Logger | undefined;
+}): Promise<void> {
+  if (input.event.type !== "turn.started") {
+    return;
+  }
+
+  const session = input.store.get(input.sessionKey);
+  if (!session) return;
+  if (session.runtimeStatus === "running") {
+    return;
+  }
+
+  await applySessionRuntimeEvent({
+    bot: input.bot,
+    store: input.store,
+    sessionKey: input.sessionKey,
+    event: {
+      type: "turn.started",
+    },
+    logger: input.logger,
+  });
 }
 
 async function projectEventToTelegramBuffer(
@@ -364,7 +398,7 @@ async function projectEventToTelegramBuffer(
       buffers.note(key, `thread started: ${event.thread_id}`);
       return;
     case "turn.started":
-      buffers.note(key, "started processing");
+      buffers.markTurnStarted(key);
       return;
     case "turn.completed":
       buffers.note(
@@ -495,10 +529,6 @@ function projectTodoList(buffers: MessageBuffer, key: string, item: TodoListItem
   if (lines.length > 0) {
     buffers.setPlan(key, lines.join("\n"));
   }
-}
-
-function createLocalTurnId(): string {
-  return `sdk-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function toSdkInput(input: StoredCodexInput): Input {

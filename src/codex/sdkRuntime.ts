@@ -53,7 +53,14 @@ export class CodexSdkRuntime {
   private configOverrides: CodexOptions["config"] | undefined;
   private readonly injectedCodex: Pick<Codex, "startThread" | "resumeThread"> | null;
 
-  constructor(private readonly input: { codexBin: string; logger?: Logger; configOverrides?: CodexOptions["config"]; codex?: Pick<Codex, "startThread" | "resumeThread"> }) {
+  constructor(
+    private readonly input: {
+      codexBin: string;
+      logger?: Logger;
+      configOverrides?: CodexOptions["config"];
+      codex?: Pick<Codex, "startThread" | "resumeThread">;
+    },
+  ) {
     this.configOverrides = input.configOverrides;
     this.injectedCodex = input.codex ?? null;
     this.codex = input.codex ?? this.createCodex();
@@ -155,8 +162,12 @@ export class CodexSdkRuntime {
     let finalResponse = "";
     let usage: RunResult["usage"] = null;
     let threadId = input.initialThreadId;
+    const iterator = streamed.events[Symbol.asyncIterator]();
 
-    for await (const event of streamed.events) {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const event = next.value;
       const activeRun = this.activeRuns.get(input.sessionKey);
       if (activeRun) {
         activeRun.lastEventAt = new Date().toISOString();

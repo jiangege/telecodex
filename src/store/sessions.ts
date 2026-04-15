@@ -49,14 +49,12 @@ export interface SessionRuntimeState {
   status: SessionRuntimeStatus;
   detail: string | null;
   updatedAt: string;
-  activeTurnId: string | null;
 }
 
 export interface TelegramSession extends StoredSessionRecord {
   runtimeStatus: SessionRuntimeStatus;
   runtimeStatusDetail: string | null;
   runtimeStatusUpdatedAt: string;
-  activeTurnId: string | null;
   outputMessageId: number | null;
 }
 
@@ -445,7 +443,6 @@ function mapStoredSession(
     status: "idle" as const,
     detail: null,
     updatedAt: stored.updatedAt,
-    activeTurnId: null,
   };
   return {
     ...stored,
@@ -453,7 +450,6 @@ function mapStoredSession(
     runtimeStatus: runtime.status,
     runtimeStatusDetail: runtime.detail,
     runtimeStatusUpdatedAt: runtime.updatedAt,
-    activeTurnId: runtime.activeTurnId,
     outputMessageId: outputMessageId ?? null,
   };
 }

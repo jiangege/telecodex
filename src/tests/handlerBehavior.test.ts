@@ -42,6 +42,56 @@ function createConfigRuntime(events: ThreadEvent[], options?: { running?: boolea
   };
 }
 
+function createDeferredTurnRuntime() {
+  let running = false;
+  let startTurn: () => void = () => undefined;
+  let finishTurn: () => void = () => undefined;
+  const turnStarted = new Promise<void>((resolve) => {
+    startTurn = resolve;
+  });
+  const turnFinished = new Promise<void>((resolve) => {
+    finishTurn = resolve;
+  });
+
+  return {
+    startTurn,
+    finishTurn,
+    runtime: {
+      isRunning: () => running,
+      getActiveRun: () => null,
+      interrupt: () => {
+        running = false;
+        finishTurn();
+        return true;
+      },
+      run: async ({ callbacks, profile }: any) => {
+        running = true;
+        const threadId = profile.threadId ?? "thread-deferred";
+        await callbacks?.onThreadStarted?.(threadId);
+        await callbacks?.onEvent?.({ type: "thread.started", thread_id: threadId });
+        await turnStarted;
+        await callbacks?.onEvent?.({ type: "turn.started" });
+        await turnFinished;
+        await callbacks?.onEvent?.({
+          type: "item.completed",
+          item: { id: "msg-deferred", type: "agent_message", text: "done" },
+        });
+        await callbacks?.onEvent?.({
+          type: "turn.completed",
+          usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+        });
+        running = false;
+        return {
+          threadId,
+          items: [],
+          finalResponse: "done",
+          usage: null,
+        };
+      },
+    },
+  };
+}
+
 test("handleUserText queues when a session already has an active SDK run", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot, sent } = createFakeBot();
@@ -59,7 +109,6 @@ test("handleUserText queues when a session already has an active SDK run", async
       status: "running",
       detail: null,
       updatedAt: new Date().toISOString(),
-      activeTurnId: "sdk-turn-busy",
     });
 
     const result = await handleUserText({
@@ -118,8 +167,51 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
     const latest = store.get(session.sessionKey);
     assert.equal(latest?.codexThreadId, "thread-211");
     assert.equal(latest?.runtimeStatus, "idle");
-    assert.equal(latest?.activeTurnId, null);
     assert.ok(edited.some((entry) => entry.text.includes("final answer")));
+  } finally {
+    cleanup();
+  }
+});
+
+test("handleUserText stays preparing until the SDK emits turn.started", async () => {
+  const { store, projects, cleanup } = createTestStores();
+  const { bot } = createFakeBot();
+  try {
+    projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    const session = store.getOrCreate({
+      sessionKey: "-100:212",
+      chatId: "-100",
+      messageThreadId: "212",
+      telegramTopicName: "demo",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+    const deferred = createDeferredTurnRuntime();
+
+    const result = await handleUserText({
+      text: "wait for sdk",
+      session,
+      store,
+      codex: deferred.runtime as never,
+      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      bot,
+      logger: createNoopLogger(),
+    });
+
+    assert.equal(result.status, "started");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    let latest = store.get(session.sessionKey);
+    assert.equal(latest?.runtimeStatus, "preparing");
+
+    deferred.startTurn();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    latest = store.get(session.sessionKey);
+    assert.equal(latest?.runtimeStatus, "running");
+
+    deferred.finishTurn();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    latest = store.get(session.sessionKey);
+    assert.equal(latest?.runtimeStatus, "idle");
   } finally {
     cleanup();
   }

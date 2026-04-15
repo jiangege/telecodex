@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GrammyError } from "grammy";
-import { editHtmlMessage, sendHtmlChunks, sendTypingAction } from "../telegram/delivery.js";
+import { GrammyError, HttpError } from "grammy";
+import { editHtmlMessage, sendHtmlChunks, sendHtmlMessage, sendTypingAction } from "../telegram/delivery.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createNoopLogger, createFakeBot } from "./helpers.js";
 
@@ -29,6 +29,63 @@ test("editHtmlMessage retries on Telegram 429", async () => {
     createNoopLogger(),
   );
   assert.equal(calls, 3);
+});
+
+test("editHtmlMessage retries on transient Telegram network errors", async () => {
+  let calls = 0;
+  const startedAt = Date.now();
+  const bot = {
+    api: {
+      async editMessageText() {
+        calls += 1;
+        if (calls < 3) {
+          throw fakeHttpError("socket hang up", "ECONNRESET");
+        }
+        return true;
+      },
+    },
+  } as never;
+
+  await editHtmlMessage(
+    bot,
+    {
+      chatId: 1,
+      messageId: 2,
+      text: "hello",
+    },
+    createNoopLogger(),
+  );
+
+  assert.equal(calls, 3);
+  assert.ok(Date.now() - startedAt >= 250);
+});
+
+test("sendHtmlMessage does not retry transient network errors", async () => {
+  let calls = 0;
+  const bot = {
+    api: {
+      async sendMessage() {
+        calls += 1;
+        throw fakeHttpError("socket hang up", "ECONNRESET");
+      },
+    },
+  } as never;
+
+  await assert.rejects(
+    () =>
+      sendHtmlMessage(
+        bot,
+        {
+          chatId: 1,
+          messageThreadId: 2,
+          text: "hello",
+        },
+        createNoopLogger(),
+      ),
+    HttpError,
+  );
+
+  assert.equal(calls, 1);
 });
 
 test("sendHtmlChunks preserves valid html across long formatted messages", async () => {
@@ -153,6 +210,11 @@ function fakeGrammyError(description: string, retryAfter: number): GrammyError {
   error.description = description;
   error.parameters = { retry_after: retryAfter };
   return error;
+}
+
+function fakeHttpError(message: string, code: string): HttpError {
+  const cause = Object.assign(new Error(message), { code });
+  return new HttpError("Network request for 'editMessageText' failed!", cause);
 }
 
 function count(text: string, needle: string): number {

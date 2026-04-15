@@ -34,12 +34,11 @@ export function sessionLogFields(session: TelegramSession): Record<string, strin
     runtimeStatus: session.runtimeStatus,
     runtimeStatusDetail: session.runtimeStatusDetail,
     codexThreadId: session.codexThreadId,
-    activeTurnId: session.activeTurnId,
   };
 }
 
 export function isSessionBusy(session: TelegramSession): boolean {
-  return session.runtimeStatus === "preparing" || session.runtimeStatus === "running" || session.activeTurnId != null;
+  return session.runtimeStatus === "preparing" || session.runtimeStatus === "running";
 }
 
 export function describeBusyStatus(status: TelegramSession["runtimeStatus"]): string {

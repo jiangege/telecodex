@@ -4,10 +4,10 @@ import type { Logger } from "./logger.js";
 
 export type SessionRuntimeEvent =
   | { type: "turn.preparing"; detail?: string | null }
-  | { type: "turn.started"; turnId: string }
-  | { type: "turn.completed"; turnId?: string | null }
-  | { type: "turn.interrupted"; turnId?: string | null }
-  | { type: "turn.failed"; turnId?: string | null; message?: string | null };
+  | { type: "turn.started" }
+  | { type: "turn.completed" }
+  | { type: "turn.interrupted" }
+  | { type: "turn.failed"; message?: string | null };
 
 export async function applySessionRuntimeEvent(input: {
   bot: Bot;
@@ -34,14 +34,12 @@ export function reduceSessionRuntimeState(
         status: "preparing",
         detail: event.detail ?? null,
         updatedAt,
-        activeTurnId: null,
       };
     case "turn.started":
       return {
         status: "running",
         detail: null,
         updatedAt,
-        activeTurnId: event.turnId,
       };
     case "turn.completed":
     case "turn.interrupted":
@@ -49,14 +47,12 @@ export function reduceSessionRuntimeState(
         status: "idle",
         detail: null,
         updatedAt,
-        activeTurnId: null,
       };
     case "turn.failed":
       return {
         status: "failed",
         detail: event.message?.trim() || null,
         updatedAt,
-        activeTurnId: null,
       };
   }
 }

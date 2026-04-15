@@ -48,6 +48,47 @@ test("MessageBuffer sends a typing pulse while a run is pending", async () => {
   });
 });
 
+test("MessageBuffer starts as starting and switches to working after turn start", async () => {
+  const { bot, sent, edited } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+
+  await buffers.create("thread-phase:turn-1", { chatId: 1, messageThreadId: 2 });
+  assert.match(sent[0]?.text ?? "", /Starting Codex/);
+
+  buffers.markTurnStarted("thread-phase:turn-1");
+  await delay(4);
+
+  assert.ok(edited.some((entry) => entry.text.includes("Codex is working...")));
+  await buffers.complete("thread-phase:turn-1", "done");
+});
+
+test("MessageBuffer stops typing after idle activity and resumes on new progress", async () => {
+  const { bot, chatActions } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger(), {
+    activityPulseIntervalMs: 2,
+    activityIdleMs: 5,
+  });
+
+  await buffers.create("thread-idle:turn-1", { chatId: 1, messageThreadId: 2 });
+  await delay(12);
+
+  const stoppedCount = chatActions.length;
+  await delay(8);
+  assert.equal(chatActions.length, stoppedCount);
+
+  buffers.note("thread-idle:turn-1", "still working");
+  await delay(4);
+  assert.ok(chatActions.length > stoppedCount);
+
+  await buffers.complete("thread-idle:turn-1", "done");
+});
+
 function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

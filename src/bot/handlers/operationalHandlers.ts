@@ -122,7 +122,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         textField("state", formatSessionRuntimeStatus(latestSession.runtimeStatus)),
         textField("state detail", latestSession.runtimeStatusDetail ?? "none"),
         textField("state updated", formatIsoTimestamp(latestSession.runtimeStatusUpdatedAt)),
-        codeField("active turn", latestSession.activeTurnId ?? "none"),
         textField("active run", activeRun ? formatIsoTimestamp(activeRun.startedAt) : "none"),
         codeField("active run thread", activeRun?.threadId ?? "none"),
         textField("active run last event", activeRun?.lastEventType ?? "none"),
@@ -156,7 +155,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         title: "Queue",
         fields: [
           textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
-          codeField("active turn", session.activeTurnId ?? "none"),
           textField("queue", queueDepth),
         ],
         sections: [

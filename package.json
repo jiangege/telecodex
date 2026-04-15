@@ -1,6 +1,6 @@
 {
   "name": "telecodex",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Telegram bridge for local Codex.",
   "license": "MIT",
   "type": "module",
@@ -52,7 +52,7 @@
     "@grammyjs/parse-mode": "^2.3.0",
     "@grammyjs/runner": "^2.0.3",
     "@napi-rs/keyring": "^1.2.0",
-    "@openai/codex-sdk": "^0.120.0",
+    "@openai/codex-sdk": "^0.121.0",
     "clipboardy": "^4.0.0",
     "grammy": "^1.42.0",
     "markdown-it": "^14.1.0",

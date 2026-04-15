@@ -10,12 +10,14 @@ import {
 import type { Logger } from "../runtime/logger.js";
 import { renderMarkdownForTelegram, renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
 
-const ACTIVITY_PULSE_INTERVAL_MS = 4_000;
+const DEFAULT_ACTIVITY_PULSE_INTERVAL_MS = 4_000;
+const DEFAULT_ACTIVITY_IDLE_MS = 60_000;
 
 interface BufferState {
   chatId: number;
   messageThreadId: number | null;
   messageId: number;
+  phase: "starting" | "running";
   text: string;
   progressLines: string[];
   planText: string;
@@ -24,18 +26,28 @@ interface BufferState {
   timer: NodeJS.Timeout | null;
   activityTimer: NodeJS.Timeout | null;
   activityInFlight: boolean;
+  lastActivityAt: number;
   lastSentText: string;
   queue: Promise<void>;
 }
 
 export class MessageBuffer {
   private readonly states = new Map<string, BufferState>();
+  private readonly activityPulseIntervalMs: number;
+  private readonly activityIdleMs: number;
 
   constructor(
     private readonly bot: Bot,
     private readonly updateIntervalMs: number,
     private readonly logger?: Logger,
-  ) {}
+    input?: {
+      activityPulseIntervalMs?: number;
+      activityIdleMs?: number;
+    },
+  ) {
+    this.activityPulseIntervalMs = input?.activityPulseIntervalMs ?? DEFAULT_ACTIVITY_PULSE_INTERVAL_MS;
+    this.activityIdleMs = input?.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
+  }
 
   async create(key: string, input: { chatId: number; messageThreadId: number | null }): Promise<number> {
     const previous = this.states.get(key);
@@ -50,7 +62,7 @@ export class MessageBuffer {
       {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
-        text: "Codex is working...",
+        text: "Starting Codex...",
       },
       this.logger,
     );
@@ -58,6 +70,7 @@ export class MessageBuffer {
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
       messageId: message.message_id,
+      phase: "starting",
       text: "",
       progressLines: [],
       planText: "",
@@ -66,6 +79,7 @@ export class MessageBuffer {
       timer: null,
       activityTimer: null,
       activityInFlight: false,
+      lastActivityAt: Date.now(),
       lastSentText: "",
       queue: Promise.resolve(),
     };
@@ -82,6 +96,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.text = text;
+    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -98,6 +113,16 @@ export class MessageBuffer {
     if (state.progressLines.length > 8) {
       state.progressLines.splice(0, state.progressLines.length - 8);
     }
+    this.touchActivity(state);
+    this.scheduleFlush(key, state);
+  }
+
+  markTurnStarted(key: string): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    if (state.phase === "running") return;
+    state.phase = "running";
+    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -105,6 +130,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.planText = text.trim();
+    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -112,6 +138,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.reasoningSummaryText = text.trim();
+    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -119,6 +146,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.toolOutputText = truncateTail(text.replace(/\r/g, "").trim(), 2000);
+    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -172,7 +200,7 @@ export class MessageBuffer {
     await this.enqueue(state, async () => {
       const latest = this.states.get(key);
       if (!latest) return;
-      const text = renderPlainForTelegram(truncateForEdit(composePendingText(latest)));
+      const text = renderPlainForTelegram(truncateForEdit(composePendingText(latest), latest.phase));
       if (text === latest.lastSentText) return;
       await this.safeEdit(latest, text);
     });
@@ -225,10 +253,11 @@ export class MessageBuffer {
   }
 
   private startActivityPulse(state: BufferState): void {
+    if (state.activityTimer) return;
     void this.sendActivityPulse(state);
     const timer = setInterval(() => {
       void this.sendActivityPulse(state);
-    }, ACTIVITY_PULSE_INTERVAL_MS);
+    }, this.activityPulseIntervalMs);
     timer.unref?.();
     state.activityTimer = timer;
   }
@@ -240,6 +269,10 @@ export class MessageBuffer {
   }
 
   private async sendActivityPulse(state: BufferState): Promise<void> {
+    if (Date.now() - state.lastActivityAt >= this.activityIdleMs) {
+      this.stopActivityPulse(state);
+      return;
+    }
     if (state.activityInFlight) return;
     state.activityInFlight = true;
     try {
@@ -259,6 +292,13 @@ export class MessageBuffer {
       });
     } finally {
       state.activityInFlight = false;
+    }
+  }
+
+  private touchActivity(state: BufferState): void {
+    state.lastActivityAt = Date.now();
+    if (!state.activityTimer) {
+      this.startActivityPulse(state);
     }
   }
 
@@ -289,13 +329,13 @@ export class MessageBuffer {
   }
 }
 
-function truncateForEdit(text: string): string {
-  if (text.length <= 3800) return text || "Codex is working...";
+function truncateForEdit(text: string, phase: BufferState["phase"]): string {
+  if (text.length <= 3800) return text || pendingBanner(phase);
   return `${text.slice(0, 3800)}\n\n...`;
 }
 
 function composePendingText(state: BufferState): string {
-  const sections = ["Codex is working..."];
+  const sections = [pendingBanner(state.phase)];
 
   if (state.planText) {
     sections.push(`[Plan]\n${state.planText}`);
@@ -321,6 +361,10 @@ function composePendingText(state: BufferState): string {
   }
 
   return sections.join("\n\n");
+}
+
+function pendingBanner(phase: BufferState["phase"]): string {
+  return phase === "running" ? "Codex is working..." : "Starting Codex...";
 }
 
 function truncateTail(text: string, maxLength: number): string {

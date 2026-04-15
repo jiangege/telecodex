@@ -176,10 +176,10 @@ test("e2e topic flow creates a project topic, runs Codex, and reports status", a
 
     assert.equal(harness.store.getQueuedInputCount(`-100:${topicId}`), 0);
     assert.equal(codex.getActiveRun(`-100:${topicId}`)?.lastEventType, null);
-    const runningStatusReplies = await runCommand(harness, "status", "", topicId);
-    const runningStatus = runningStatusReplies.at(-1) ?? "";
-    assert.match(runningStatus, /state: running/);
-    assert.doesNotMatch(runningStatus, /active run: none/);
+    const preparingStatusReplies = await runCommand(harness, "status", "", topicId);
+    const preparingStatus = preparingStatusReplies.at(-1) ?? "";
+    assert.match(preparingStatus, /state: preparing/);
+    assert.doesNotMatch(preparingStatus, /active run: none/);
 
     codex.calls[0]!.release();
 
@@ -187,11 +187,10 @@ test("e2e topic flow creates a project topic, runs Codex, and reports status", a
 
     const session = harness.store.get(`-100:${topicId}`);
     assert.equal(session?.codexThreadId, "thread-e2e-1");
-    assert.equal(session?.activeTurnId, null);
     assert.equal(session?.outputMessageId, null);
     assert.equal(codex.calls[0]?.profile.cwd, process.cwd());
     assert.equal(codex.calls[0]?.profile.threadId, null);
-    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Codex is working")));
+    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Starting Codex")));
     assert.ok(harness.chatActions.some((entry) => entry.messageThreadId === topicId && entry.action === "typing"));
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: inspect the project")));
 
@@ -339,7 +338,6 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
       harness.edited.some((entry) => entry.text.includes("Current run interrupted")) ||
       harness.sent.some((entry) => entry.text.includes("Current run interrupted")),
     );
-    assert.equal(harness.store.get(sessionKey)?.activeTurnId, null);
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
   } finally {
     await harness.cleanup();
@@ -370,7 +368,6 @@ test("e2e status recovers stale in-memory running state", async () => {
       status: "running",
       detail: null,
       updatedAt: new Date().toISOString(),
-      activeTurnId: "lost-turn",
     });
     harness.store.setOutputMessage(sessionKey, 1234);
 
@@ -378,7 +375,6 @@ test("e2e status recovers stale in-memory running state", async () => {
     const status = replies.at(-1) ?? "";
     assert.match(status, /state: failed/);
     assert.match(status, /state detail: The previous run was lost. Send the message again./);
-    assert.match(status, /active turn: none/);
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
   } finally {
     await harness.cleanup();
