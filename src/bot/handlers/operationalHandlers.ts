@@ -17,15 +17,16 @@ import {
 } from "../commandSupport.js";
 import { formatIsoTimestamp, sessionLogFields } from "../sessionFlow.js";
 import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
+import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, codex, logger } = deps;
 
-  bot.command(["start", "help"], async (ctx) => {
+  bot.command(["start", "help"], wrapUserFacingHandler("help", logger, async (ctx) => {
     await replyNotice(ctx, formatHelpText(ctx, projects));
-  });
+  }));
 
-  bot.command("admin", async (ctx) => {
+  bot.command("admin", wrapUserFacingHandler("admin", logger, async (ctx) => {
     if (!isPrivateChat(ctx)) {
       await replyNotice(ctx, "Use /admin in the bot private chat.");
       return;
@@ -85,9 +86,9 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     }
 
     await replyUsage(ctx, "/admin | /admin rebind | /admin cancel");
-  });
+  }));
 
-  bot.command("status", async (ctx) => {
+  bot.command("status", wrapUserFacingHandler("status", logger, async (ctx) => {
     if (isPrivateChat(ctx)) {
       await replyNotice(ctx, formatPrivateStatus(store, projects));
       return;
@@ -141,9 +142,9 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         textField("effort", formatReasoningEffort(latestSession.reasoningEffort)),
       ],
     });
-  });
+  }));
 
-  bot.command("queue", async (ctx) => {
+  bot.command("queue", wrapUserFacingHandler("queue", logger, async (ctx) => {
     const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
@@ -187,9 +188,9 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     }
 
     await replyUsage(ctx, "/queue | /queue drop <id> | /queue clear");
-  });
+  }));
 
-  bot.command("stop", async (ctx) => {
+  bot.command("stop", wrapUserFacingHandler("stop", logger, async (ctx) => {
     const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
@@ -210,7 +211,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
       });
       await replyError(ctx, `Interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-  });
+  }));
 }
 
 function formatQueuedPreview(items: Array<{ text: string }>): string {

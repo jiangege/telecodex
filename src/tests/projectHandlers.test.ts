@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { GrammyError } from "grammy";
 import { registerHandlers } from "../bot/registerHandlers.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createTestStores } from "./helpers.js";
 
@@ -14,12 +15,13 @@ function createConfig() {
 }
 
 function createDeps() {
-  const { bot, commands, createdTopics, sent } = createFakeHandlerBot();
+  const { bot, api, commands, createdTopics, sent } = createFakeHandlerBot();
   const stores = createTestStores();
   const threadCatalog = createFakeThreadCatalog();
   return {
     ...stores,
     bot,
+    api,
     commands,
     createdTopics,
     sent,
@@ -205,6 +207,94 @@ test("/thread list shows saved project threads from the Codex session catalog", 
     assert.ok(hasEntity(options.entities, output, "bold", "1. First saved thread"));
     assert.ok(hasEntity(options.entities, output, "code", "thread-1"));
     assert.ok(hasEntity(options.entities, output, "code", "/thread resume thread-1"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("/thread new replies with a useful error when Telegram denies topic creation", async () => {
+  const { store, projects, cleanup, bot, api, commands, createdTopics, threadCatalog } = createDeps();
+  try {
+    projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    api.createForumTopic = async (chatId: number, name: string) => {
+      throw new GrammyError(
+        "Call to 'createForumTopic' failed!",
+        {
+          ok: false,
+          error_code: 400,
+          description: "Bad Request: not enough rights to create a topic",
+          parameters: {},
+        },
+        "createForumTopic",
+        { chat_id: chatId, name },
+      );
+    };
+
+    registerHandlers({
+      bot,
+      config: createConfig(),
+      store,
+      projects,
+      codex: {} as never,
+      threadCatalog,
+      buffers: {} as never,
+    });
+
+    const replies: string[] = [];
+    const handler = commands.get("thread");
+    assert.ok(handler);
+    await handler!({
+      chat: { id: -100, type: "supergroup" },
+      update: { update_id: 401 },
+      message: {},
+      match: "new Research Thread",
+      reply: async (text: string) => {
+        replies.push(text);
+        return undefined;
+      },
+    });
+
+    assert.equal(createdTopics.length, 0);
+    assert.match(replies.at(-1) ?? "", /lacks permission to create topics/i);
+    assert.match(replies.at(-1) ?? "", /grant topic management/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("/thread list still replies when an unexpected handler error escapes", async () => {
+  const { store, projects, cleanup, bot, commands, threadCatalog } = createDeps();
+  try {
+    projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    threadCatalog.listProjectThreads = async () => {
+      throw new Error("catalog offline");
+    };
+
+    registerHandlers({
+      bot,
+      config: createConfig(),
+      store,
+      projects,
+      codex: {} as never,
+      threadCatalog,
+      buffers: {} as never,
+    });
+
+    const replies: string[] = [];
+    const handler = commands.get("thread");
+    assert.ok(handler);
+    await handler!({
+      chat: { id: -100, type: "supergroup" },
+      update: { update_id: 402 },
+      message: {},
+      match: "list",
+      reply: async (text: string) => {
+        replies.push(text);
+        return undefined;
+      },
+    });
+
+    assert.match(replies.at(-1) ?? "", /catalog offline/);
   } finally {
     cleanup();
   }

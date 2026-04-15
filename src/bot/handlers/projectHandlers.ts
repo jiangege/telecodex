@@ -18,6 +18,7 @@ import {
 } from "../commandSupport.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
 import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
+import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 const PROJECT_REQUIRED_MESSAGE = "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.";
 type ProjectCommandContext = CommandContext<Context>;
@@ -25,7 +26,7 @@ type ProjectCommandContext = CommandContext<Context>;
 export function registerProjectHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, logger } = deps;
 
-  bot.command("project", async (ctx) => {
+  bot.command("project", wrapUserFacingHandler("project", logger, async (ctx) => {
     const { command, args } = parseSubcommand(ctx.match.trim());
 
     if (isPrivateChat(ctx)) {
@@ -92,9 +93,9 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
     }
 
     await replyUsage(ctx, ["/project", "/project bind <absolute-path>", "/project unbind"]);
-  });
+  }));
 
-  bot.command("thread", async (ctx) => {
+  bot.command("thread", wrapUserFacingHandler("thread", logger, async (ctx) => {
     if (isPrivateChat(ctx)) {
       await replyNotice(ctx, "The thread command is only available inside project supergroups.");
       return;
@@ -140,7 +141,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
     }
 
     await replyUsage(ctx, ["/thread list", "/thread resume <threadId>", "/thread new <topic-name>"]);
-  });
+  }));
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
     const threadId = ctx.message.message_thread_id;

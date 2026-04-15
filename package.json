@@ -1,6 +1,6 @@
 {
   "name": "telecodex",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Telegram bridge for local Codex.",
   "license": "MIT",
   "type": "module",

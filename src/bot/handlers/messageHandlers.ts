@@ -6,11 +6,12 @@ import {
 import { handleUserInput, handleUserText } from "../inputService.js";
 import { telegramImageMessageToCodexInput } from "../../telegram/attachments.js";
 import { replyError, replyNotice } from "../../telegram/formatted.js";
+import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, codex, buffers, logger } = deps;
 
-  bot.on("message:text", async (ctx) => {
+  bot.on("message:text", wrapUserFacingHandler("message:text", logger, async (ctx) => {
     const text = ctx.message.text;
     logger?.info("received telegram text message", {
       ...contextLogFields(ctx),
@@ -37,9 +38,9 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       bot,
       ...(logger ? { logger } : {}),
     });
-  });
+  }));
 
-  bot.on(["message:photo", "message:document"], async (ctx) => {
+  bot.on(["message:photo", "message:document"], wrapUserFacingHandler("message:attachment", logger, async (ctx) => {
     const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) {
       logger?.warn("ignored telegram attachment because no scoped session was available", {
@@ -77,5 +78,5 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       });
       await replyError(ctx, error instanceof Error ? error.message : String(error));
     }
-  });
+  }));
 }

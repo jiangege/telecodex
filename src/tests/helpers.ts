@@ -15,7 +15,7 @@ export function createTestSessionStore(): {
   const storage = new FileStateStorage(path.join(dir, "state"));
   return {
     store: new SessionStore(storage),
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }
 
@@ -29,7 +29,7 @@ export function createTestStores(): {
   return {
     store: new SessionStore(storage),
     projects: new ProjectStore(storage),
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }
 
