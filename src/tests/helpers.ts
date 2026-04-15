@@ -137,6 +137,10 @@ export function createFakeHandlerBot() {
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const createdTopics: Array<{ chatId: number; name: string; messageThreadId: number }> = [];
+  const botCommands: Array<{
+    commands: Array<{ command: string; description: string }>;
+    scope: unknown;
+  }> = [];
   const commands = new Map<string, (ctx: any) => Promise<unknown>>();
   const events = new Map<string, (ctx: any) => Promise<unknown>>();
 
@@ -172,6 +176,13 @@ export function createFakeHandlerBot() {
       createdTopics.push({ chatId, name, messageThreadId });
       return { name, message_thread_id: messageThreadId };
     },
+    async setMyCommands(commands: Array<{ command: string; description: string }>, options?: { scope?: unknown }) {
+      botCommands.push({
+        commands: [...commands],
+        scope: options?.scope ?? null,
+      });
+      return true;
+    },
   };
 
   const bot = {
@@ -205,5 +216,6 @@ export function createFakeHandlerBot() {
     edited,
     chatActions,
     createdTopics,
+    botCommands,
   };
 }

@@ -56,6 +56,41 @@ test("wireBot runs startup topic cleanup and removes stale topic bindings", asyn
   }
 });
 
+test("wireBot syncs Telegram command menus for private chats and groups", async () => {
+  const { store, projects, cleanup } = createTestStores();
+  const { bot, botCommands } = createFakeHandlerBot();
+  const threadCatalog = createFakeThreadCatalog();
+
+  try {
+    wireBot({
+      bot,
+      config: createConfig(),
+      store,
+      projects,
+      codex: {
+        isRunning: () => false,
+      } as never,
+      threadCatalog,
+      bootstrapCode: null,
+      logger: createNoopLogger(),
+    });
+
+    await waitFor(() => botCommands.length === 2);
+    assert.deepEqual(botCommands.map((entry) => entry.scope), [
+      { type: "all_private_chats" },
+      { type: "all_group_chats" },
+    ]);
+    assert.ok(botCommands[0]?.commands.some((entry) => entry.command === "admin"));
+    assert.ok(botCommands[0]?.commands.some((entry) => entry.description === "Show or hand off admin access"));
+    assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "help"));
+    assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "thread"));
+    assert.ok(botCommands[1]?.commands.some((entry) => entry.description === "List, resume, or create topics"));
+    assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "queue"));
+  } finally {
+    cleanup();
+  }
+});
+
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
