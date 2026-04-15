@@ -73,6 +73,30 @@ npm run dev
 For a production-style local install during development, `npm link` exposes the
 same `telecodex` command globally from the current checkout.
 
+## Automated npm release
+
+This repository is set up for npm trusted publishing from GitHub Actions.
+
+1. On npm, open the `telecodex` package settings and configure a trusted publisher:
+   - Organization or user: `jiangege`
+   - Repository: `telecodex`
+   - Workflow filename: `publish.yml`
+2. Bump the version locally:
+
+```bash
+npm version patch
+```
+
+3. Push the branch and tag:
+
+```bash
+git push origin main --follow-tags
+```
+
+Pushing a `v*` tag runs `.github/workflows/publish.yml`, which installs dependencies,
+runs `npm run check`, runs `npm test`, and publishes the package to npm when the tag
+matches the version in `package.json`.
+
 ## First launch
 
 On first launch, `telecodex`:
