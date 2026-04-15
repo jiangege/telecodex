@@ -31,6 +31,7 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
     new Set([
       "start",
       "help",
+      "admin",
       "status",
       "queue",
       "stop",

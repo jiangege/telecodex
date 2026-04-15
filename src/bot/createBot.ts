@@ -29,7 +29,6 @@ export function wireBot(input: {
 
   bot.use(
     authMiddleware({
-      bootstrapCode,
       store,
       ...(logger ? { logger: logger.child("auth") } : {}),
       ...(onAdminBound ? { onAdminBound } : {}),

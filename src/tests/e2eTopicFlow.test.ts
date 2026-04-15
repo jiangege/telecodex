@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../config.js";
 import { registerHandlers } from "../bot/registerHandlers.js";
@@ -401,6 +402,12 @@ test("e2e config commands feed the next SDK run profile", async () => {
     assert.match(outsideReplies.at(-1) ?? "", /Path must stay within the project root/);
     assert.equal(harness.store.get(sessionKey)?.cwd, process.cwd());
 
+    const externalAddReplies = await runCommand(harness, "adddir", `add ${path.resolve(process.cwd(), "..")}`, topicId);
+    assert.match(externalAddReplies.at(-1) ?? "", /Path must stay within the project root/);
+
+    const externalDirectory = path.resolve(process.cwd(), "..");
+    await runCommand(harness, "adddir", `add-external ${externalDirectory}`, topicId);
+
     const allowedCwd = `${process.cwd()}/src`;
     await runCommand(harness, "cwd", allowedCwd, topicId);
     assert.equal(harness.store.get(sessionKey)?.cwd, allowedCwd);
@@ -417,7 +424,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
     assert.equal(profile?.webSearchMode, "live");
     assert.equal(profile?.networkAccessEnabled, false);
     assert.equal(profile?.skipGitRepoCheck, false);
-    assert.deepEqual(profile?.additionalDirectories, [process.cwd()]);
+    assert.deepEqual(profile?.additionalDirectories, [process.cwd(), externalDirectory]);
     assert.deepEqual(profile?.outputSchema, {
       type: "object",
       properties: {

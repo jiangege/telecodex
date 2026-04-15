@@ -15,6 +15,12 @@ export function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value)
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 export function renderMarkdownForTelegram(markdown: string): string[] {
   const tokens = md.parse(markdown, {});
   const html = renderTokens(tokens).replace(/\n{3,}/g, "\n\n").trim();
@@ -104,6 +110,7 @@ function renderTokens(tokens: Token[]): string {
 
 function renderInline(tokens: Token[]): string {
   let out = "";
+  const linkStack: boolean[] = [];
 
   for (const token of tokens) {
     switch (token.type) {
@@ -132,12 +139,18 @@ function renderInline(tokens: Token[]): string {
         out += "</s>";
         break;
       case "link_open": {
-        const href = token.attrGet("href");
-        out += href ? `<a href="${escapeHtml(href)}">` : "";
+        const href = sanitizeTelegramHref(token.attrGet("href"));
+        const opened = Boolean(href);
+        linkStack.push(opened);
+        if (href) {
+          out += `<a href="${escapeHtmlAttribute(href)}">`;
+        }
         break;
       }
       case "link_close":
-        out += "</a>";
+        if (linkStack.pop()) {
+          out += "</a>";
+        }
         break;
       case "softbreak":
       case "hardbreak":
@@ -153,4 +166,29 @@ function renderInline(tokens: Token[]): string {
   }
 
   return out;
+}
+
+function sanitizeTelegramHref(value: string | null): string | null {
+  if (!value) return null;
+  const href = value.trim();
+  if (!href) return null;
+
+  try {
+    const url = new URL(href);
+    return isAllowedTelegramProtocol(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedTelegramProtocol(protocol: string): boolean {
+  switch (protocol) {
+    case "http:":
+    case "https:":
+    case "mailto:":
+    case "tg:":
+      return true;
+    default:
+      return false;
+  }
 }

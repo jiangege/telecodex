@@ -10,15 +10,15 @@ import {
 } from "@clack/prompts";
 import clipboard from "clipboardy";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import { buildConfig, type AppConfig } from "../config.js";
 import { openDatabase } from "../store/db.js";
 import { ProjectStore } from "../store/projects.js";
-import { SessionStore } from "../store/sessions.js";
+import { BINDING_CODE_MAX_ATTEMPTS, SessionStore } from "../store/sessions.js";
 import { getStateDbPath } from "./appPaths.js";
+import { generateBindingCode } from "./bindingCodes.js";
 import {
   PLAINTEXT_TOKEN_FALLBACK_ENV,
   SecretStore,
@@ -63,20 +63,27 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
 
   let bootstrapCode: string | null = null;
   if (store.getAuthorizedUserId() == null) {
-    bootstrapCode = store.getBootstrapCode();
-    if (!bootstrapCode) {
-      bootstrapCode = generateBootstrapCode();
-      store.setBootstrapCode(bootstrapCode);
+    let binding = store.getBindingCodeState();
+    if (!binding || binding.mode !== "bootstrap") {
+      binding = store.issueBindingCode({
+        code: generateBindingCode("bootstrap"),
+        mode: "bootstrap",
+      });
     }
+    bootstrapCode = binding.code;
+  } else if (store.getBindingCodeState()?.mode === "bootstrap") {
+    store.clearBindingCode();
   }
   if (bootstrapCode) {
+    const binding = store.getBindingCodeState();
     const copied = await copyBootstrapCode(bootstrapCode);
     note(
       [
         `Bot: ${botUsername ? `@${botUsername}` : "unknown"}`,
         `Workspace: ${config.defaultCwd}`,
         copied ? "Binding code copied to the clipboard." : "Failed to copy the binding code. Copy it manually.",
-        "This binding code stays valid until an admin account successfully claims it.",
+        `Binding code expires at: ${binding?.expiresAt ?? "unknown"}`,
+        `Max failed attempts: ${binding?.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
         "",
         bootstrapCode,
       ].join("\n"),
@@ -249,8 +256,4 @@ function requirePromptValue(value: string | symbol): string {
 function exitCancelled(): never {
   cancel("Cancelled");
   process.exit(0);
-}
-
-function generateBootstrapCode(): string {
-  return `bind-${randomBytes(6).toString("base64url")}`;
 }

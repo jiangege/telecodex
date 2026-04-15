@@ -227,19 +227,20 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
   });
 
   bot.command("adddir", async (ctx) => {
+    const project = getProjectForContext(ctx, projects);
     const session = getScopedSession(ctx, store, projects, config);
-    if (!session) return;
+    if (!project || !session) return;
 
     const [command, ...rest] = ctx.match.trim().split(/\s+/).filter(Boolean);
     const args = rest.join(" ");
     if (!command || command === "list") {
       await ctx.reply(
         session.additionalDirectories.length === 0
-          ? "additional directories: none\nUsage: /adddir add <absolute-path> | /adddir drop <index> | /adddir clear"
+          ? "additional directories: none\nUsage: /adddir add <path-inside-project> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear"
           : [
               "additional directories:",
               ...session.additionalDirectories.map((directory, index) => `${index + 1}. ${directory}`),
-              "Usage: /adddir add <absolute-path> | /adddir drop <index> | /adddir clear",
+              "Usage: /adddir add <path-inside-project> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear",
             ].join("\n"),
       );
       return;
@@ -247,14 +248,36 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
 
     if (command === "add") {
       if (!args) {
-        await ctx.reply("Usage: /adddir add <absolute-path>");
+        await ctx.reply("Usage: /adddir add <path-inside-project>");
+        return;
+      }
+      try {
+        const directory = assertProjectScopedPath(args, project.cwd);
+        const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
+        store.setAdditionalDirectories(session.sessionKey, next);
+        await ctx.reply(`Added additional directory:\n${directory}`);
+      } catch (error) {
+        await ctx.reply(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    if (command === "add-external") {
+      if (!args) {
+        await ctx.reply("Usage: /adddir add-external <absolute-path>");
         return;
       }
       try {
         const directory = resolveExistingDirectory(args);
         const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
         store.setAdditionalDirectories(session.sessionKey, next);
-        await ctx.reply(`Added additional directory:\n${directory}`);
+        await ctx.reply(
+          [
+            "Added external additional directory outside the project root.",
+            directory,
+            "Codex can now read files there during future runs.",
+          ].join("\n"),
+        );
       } catch (error) {
         await ctx.reply(error instanceof Error ? error.message : String(error));
       }
@@ -279,7 +302,7 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    await ctx.reply("Usage: /adddir list | /adddir add <absolute-path> | /adddir drop <index> | /adddir clear");
+    await ctx.reply("Usage: /adddir list | /adddir add <path-inside-project> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear");
   });
 
   bot.command("schema", async (ctx) => {

@@ -1,4 +1,5 @@
 import { presetFromProfile } from "../../config.js";
+import { generateBindingCode } from "../../runtime/bindingCodes.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
 import { refreshSessionIfActiveTurnIsStale } from "../inputService.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
@@ -21,6 +22,67 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
   bot.command(["start", "help"], async (ctx) => {
     await ctx.reply(formatHelpText(ctx, projects));
+  });
+
+  bot.command("admin", async (ctx) => {
+    if (!isPrivateChat(ctx)) {
+      await ctx.reply("Use /admin in the bot private chat.");
+      return;
+    }
+
+    const authorizedUserId = store.getAuthorizedUserId();
+    if (authorizedUserId == null) {
+      await ctx.reply("Admin binding is not completed yet.");
+      return;
+    }
+
+    const { command } = parseSubcommand(ctx.match.trim());
+    const binding = store.getBindingCodeState();
+    if (!command || command === "status") {
+      await ctx.reply(
+        [
+          "Admin status",
+          `authorized telegram user id: ${authorizedUserId}`,
+          binding?.mode === "rebind"
+            ? `pending handoff: active until ${formatIsoTimestamp(binding.expiresAt)} (${binding.maxAttempts - binding.attempts} attempts remaining)`
+            : "pending handoff: none",
+          "Usage: /admin | /admin rebind | /admin cancel",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (command === "rebind") {
+      const next = store.issueBindingCode({
+        code: generateBindingCode("rebind"),
+        mode: "rebind",
+        issuedByUserId: authorizedUserId,
+      });
+      await ctx.reply(
+        [
+          "Admin handoff code created.",
+          `expires at: ${formatIsoTimestamp(next.expiresAt)}`,
+          `max failed attempts: ${next.maxAttempts}`,
+          "",
+          next.code,
+          "",
+          "Send this code from the target Telegram account in this bot's private chat to transfer control.",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (command === "cancel") {
+      if (binding?.mode !== "rebind") {
+        await ctx.reply("No pending admin handoff.");
+        return;
+      }
+      store.clearBindingCode();
+      await ctx.reply("Cancelled the pending admin handoff.");
+      return;
+    }
+
+    await ctx.reply("Usage: /admin | /admin rebind | /admin cancel");
   });
 
   bot.command("status", async (ctx) => {

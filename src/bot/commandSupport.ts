@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Bot, Context } from "grammy";
 import {
@@ -77,6 +77,7 @@ export function formatHelpText(ctx: Context, projects: ProjectStore): string {
       "/queue drop <id>",
       "/queue clear",
       "/stop",
+      "/admin",
       "",
       formatPrivateProjectSummary(projects),
     ].join("\n");
@@ -120,16 +121,18 @@ export function formatHelpText(ctx: Context, projects: ProjectStore): string {
     "/web default|disabled|cached|live",
     "/network on|off",
     "/gitcheck skip|enforce",
-    "/adddir list|add|drop|clear",
+    "/adddir list|add|add-external|drop|clear",
     "/schema show|set|clear",
     "/codexconfig show|set|clear",
   ].join("\n");
 }
 
 export function formatPrivateStatus(store: SessionStore, projects: ProjectStore): string {
+  const binding = store.getBindingCodeState();
   return [
     "telecodex admin",
     `authorized telegram user id: ${store.getAuthorizedUserId() ?? "not bound"}`,
+    binding?.mode === "rebind" ? `pending handoff: active until ${binding.expiresAt}` : "pending handoff: none",
     "",
     formatPrivateProjectSummary(projects),
   ].join("\n");
@@ -244,12 +247,13 @@ export function resolveExistingDirectory(input: string): string {
     throw new Error(`Not a directory: ${resolved}`);
   }
 
-  return resolved;
+  return canonicalizeBoundaryPath(resolved);
 }
 
 export function assertProjectScopedPath(input: string, projectRoot: string): string {
-  const resolved = path.resolve(input.trim());
-  if (!isPathWithinRoot(resolved, projectRoot)) {
+  const resolved = resolveExistingDirectory(input);
+  const canonicalRoot = resolveExistingDirectory(projectRoot);
+  if (!isPathWithinRoot(resolved, canonicalRoot)) {
     throw new Error(["Path must stay within the project root.", `project root: ${projectRoot}`, `input: ${resolved}`].join("\n"));
   }
   return resolved;
@@ -286,7 +290,16 @@ export function hasTopicContext(ctx: Context): boolean {
 }
 
 export function isPathWithinRoot(candidate: string, root: string): boolean {
-  const resolvedCandidate = path.resolve(candidate);
-  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = canonicalizeBoundaryPath(candidate);
+  const resolvedRoot = canonicalizeBoundaryPath(root);
   return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+function canonicalizeBoundaryPath(input: string): string {
+  const resolved = path.resolve(input);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }

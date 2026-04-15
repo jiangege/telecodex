@@ -83,6 +83,8 @@ On first launch, `telecodex`:
 4. Generates a one-time bootstrap code if no Telegram admin is bound yet.
 5. Waits for that code in a private chat. The first successful sender becomes the permanent admin for this bot instance.
 
+Bootstrap codes are time-limited and attempt-limited. When a code expires or is exhausted, start telecodex again locally to issue a fresh one.
+
 There are no required environment variables in the normal startup path.
 
 Optional security override:
@@ -116,6 +118,9 @@ Optional security override:
 
 - `/start` or `/help` - show the current usage model.
 - `/status` - in private chat shows global state; in a project topic shows project/thread runtime state.
+- `/admin` - in private chat, show admin binding and handoff status.
+- `/admin rebind` - in private chat, issue a time-limited handoff code for transferring control to another Telegram account.
+- `/admin cancel` - in private chat, cancel a pending admin handoff code.
 - `/project` - show the current supergroup's project binding.
 - `/project bind <absolute-path>` - bind the current supergroup to a project root.
 - `/project unbind` - remove the current supergroup's project binding.
@@ -134,7 +139,7 @@ Optional security override:
 - `/web default|disabled|cached|live` - set Codex SDK web search mode.
 - `/network on|off` - set workspace network access for Codex SDK runs.
 - `/gitcheck skip|enforce` - control Codex SDK git repository checks.
-- `/adddir list|add <absolute-path>|drop <index>|clear` - manage Codex SDK additional directories.
+- `/adddir list|add <path-inside-project>|add-external <absolute-path>|drop <index>|clear` - manage Codex SDK additional directories. `add` stays inside the project root; `add-external` is the explicit escape hatch.
 - `/schema show|set <JSON object>|clear` - manage Codex SDK output schema for the current topic.
 - `/codexconfig show|set <JSON object>|clear` - manage global non-auth Codex SDK config overrides for future runs.
 - Image messages in a topic - download the Telegram image locally and send it as SDK `local_image` input.
@@ -144,6 +149,7 @@ Optional security override:
 - Long polling is managed by `@grammyjs/runner`.
 - Streaming updates are throttled before editing Telegram messages.
 - Final answers are rendered from Markdown to Telegram-safe HTML.
+- Project-scoped path checks resolve symlinks before enforcing the root boundary, so topic cwd changes cannot escape the bound project through symlink paths.
 - Because the SDK run is in-process, a telecodex restart cannot resume a partially streamed Telegram turn; the topic is reset and the user is asked to resend.
 - Authentication and provider switching remain owned by the local Codex installation; telecodex does not manage API keys or login state.
 - Interactive terminal stdin bridging and native Codex approval UI are intentionally not part of the Telegram contract. For unattended remote work, use the topic's sandbox/approval preset deliberately.
