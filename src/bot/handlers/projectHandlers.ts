@@ -1,4 +1,5 @@
 import type { CommandContext, Context } from "grammy";
+import path from "node:path";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
   contextLogFields,
@@ -111,16 +112,21 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
             `queue: ${store.getQueuedInputCount(session.sessionKey)}`,
             `cwd: ${session.cwd}`,
             "Manage threads in this project:",
+            "/thread list",
             "/thread resume <threadId>",
             "/thread new <topic-name>",
           ].join("\n"),
         );
         return;
       }
-      await ctx.reply("Usage:\n/thread resume <threadId>\n/thread new <topic-name>");
+      await ctx.reply("Usage:\n/thread list\n/thread resume <threadId>\n/thread new <topic-name>");
       return;
     }
 
+    if (command === "list") {
+      await listProjectThreads(ctx, deps);
+      return;
+    }
     if (command === "resume") {
       if (!args) {
         await ctx.reply("Usage: /thread resume <threadId>");
@@ -134,7 +140,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    await ctx.reply("Usage:\n/thread resume <threadId>\n/thread new <topic-name>");
+    await ctx.reply("Usage:\n/thread list\n/thread resume <threadId>\n/thread new <topic-name>");
   });
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
@@ -157,14 +163,30 @@ async function resumeThreadIntoTopic(
   deps: BotHandlerDeps,
   threadId: string,
 ): Promise<void> {
-  const { bot, config, store, projects, logger } = deps;
+  const { bot, config, store, projects, logger, threadCatalog } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
     await ctx.reply(PROJECT_REQUIRED_MESSAGE);
     return;
   }
 
-  const topicName = formatTopicName(`Resumed ${threadId.slice(0, 8)}`, "Resumed Thread");
+  const thread = await threadCatalog.findProjectThreadById({
+    projectRoot: project.cwd,
+    threadId,
+  });
+  if (!thread) {
+    await ctx.reply(
+      [
+        "Could not find a saved Codex thread with that id under this project.",
+        `project root: ${project.cwd}`,
+        `thread: ${threadId}`,
+        "Run /thread list to inspect the saved project threads first.",
+      ].join("\n"),
+    );
+    return;
+  }
+
+  const topicName = formatTopicName(thread.preview, `Resumed ${thread.id.slice(0, 8)}`);
   const forumTopic = await bot.api.createForumTopic(ctx.chat.id, topicName);
   const session = ensureTopicSession({
     store,
@@ -173,13 +195,13 @@ async function resumeThreadIntoTopic(
     chatId: ctx.chat.id,
     messageThreadId: forumTopic.message_thread_id,
     topicName: forumTopic.name,
-    threadId,
+    threadId: thread.id,
   });
 
   logger?.info("thread id bound into topic", {
     ...contextLogFields(ctx),
     sessionKey: session.sessionKey,
-    threadId,
+    threadId: thread.id,
     topicName: forumTopic.name,
   });
 
@@ -188,7 +210,8 @@ async function resumeThreadIntoTopic(
       "Created a topic and bound it to the existing thread id.",
       `topic: ${forumTopic.name}`,
       `topic id: ${forumTopic.message_thread_id}`,
-      `thread: ${threadId}`,
+      `thread: ${thread.id}`,
+      `cwd: ${thread.cwd}`,
       "Future messages in this topic will continue on that thread through the Codex SDK.",
     ].join("\n"),
   );
@@ -198,7 +221,7 @@ async function resumeThreadIntoTopic(
     session,
     [
       "This topic is now bound to an existing Codex thread id.",
-      `thread: ${threadId}`,
+      `thread: ${thread.id}`,
       "Send a message to continue.",
     ].join("\n"),
   );
@@ -252,4 +275,48 @@ async function createFreshThreadTopic(
       `model: ${session.model}`,
     ].join("\n"),
   );
+}
+
+async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDeps): Promise<void> {
+  const { projects, store, threadCatalog } = deps;
+  const project = getProjectForContext(ctx, projects);
+  if (!project) {
+    await ctx.reply(PROJECT_REQUIRED_MESSAGE);
+    return;
+  }
+
+  const threads = await threadCatalog.listProjectThreads({
+    projectRoot: project.cwd,
+    limit: 8,
+  });
+  if (threads.length === 0) {
+    await ctx.reply(
+      [
+        "No saved Codex threads were found for this project yet.",
+        `project root: ${project.cwd}`,
+      ].join("\n"),
+    );
+    return;
+  }
+
+  const lines = [
+    `Saved Codex threads for ${project.name}:`,
+    ...threads.flatMap((thread, index) => {
+      const relativeCwd = path.relative(project.cwd, thread.cwd) || ".";
+      const bound = store.getByThreadId(thread.id);
+      return [
+        `${index + 1}. ${thread.preview}`,
+        `   id: ${thread.id}`,
+        `   cwd: ${relativeCwd}`,
+        `   updated: ${thread.updatedAt}`,
+        `   source: ${thread.source ?? "unknown"}`,
+        ...(bound
+          ? [`   bound: ${bound.telegramTopicName ?? bound.messageThreadId ?? bound.sessionKey}`]
+          : []),
+      ];
+    }),
+    "",
+    "Resume one with /thread resume <threadId>",
+  ];
+  await ctx.reply(lines.join("\n"));
 }

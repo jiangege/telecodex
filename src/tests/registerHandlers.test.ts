@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHandlers } from "../bot/registerHandlers.js";
+import { createFakeThreadCatalog } from "./helpers.js";
 
 test("registerHandlers wires the SDK-first command and message entrypoints", () => {
   const commands: string[][] = [];
@@ -23,6 +24,7 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
     store: {} as never,
     projects: {} as never,
     codex: {} as never,
+    threadCatalog: createFakeThreadCatalog(),
     buffers: {} as never,
   });
 

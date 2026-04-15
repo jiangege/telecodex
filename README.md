@@ -28,6 +28,7 @@ The bot talks to local Codex through `@openai/codex-sdk`, which wraps the local
 - One topic maps to one Codex SDK thread.
 - Each topic has at most one active SDK run.
 - Follow-up messages during an active run are queued and processed in order.
+- The pending queue is in-memory only and is cleared on restart.
 - Text and image messages are mapped to Codex SDK input.
 - A run immediately creates a normal Telegram status message; progress edits that message.
 - telecodex does not use pinned messages for live state.
@@ -122,13 +123,18 @@ Optional security override:
 - The project root is bound once with `/project bind <absolute-path>`.
 - Each topic in that supergroup is one Codex thread.
 - Work happens by sending normal messages inside the topic.
+- `/thread list` shows the saved Codex threads already recorded for the bound project root or its subdirectories.
 - `/thread new <topic-name>` automatically creates a new topic; the first normal message inside it starts a fresh Codex thread.
 - `/thread resume <threadId>` automatically creates a new topic and binds it to an existing thread id.
+- On startup, telecodex probes stored topic bindings once and removes bindings whose Telegram topics no longer exist.
+- On first launch after upgrading from the old SQLite state format, telecodex imports the legacy state once and then deletes the old SQLite files (`state.sqlite` plus sidecars such as `-wal`/`-shm`).
 
 ## Stored state
 
 - Telegram bot token: stored in the system keychain when available. Plaintext local fallback is disabled by default and must be opted into explicitly.
-- Admin binding, project bindings, and topic/session state: stored in a local SQLite database under `~/.telecodex/`.
+- Codex thread history: read directly from Codex session files under `$CODEX_HOME/sessions` (or `~/.codex/sessions` by default).
+- Admin binding, project bindings, and durable Telegram topic configuration: stored as local JSON files under `~/.telecodex/state/`.
+- Legacy upgrade path: if `~/.telecodex/state.sqlite` exists from an older telecodex version, it is imported once into the JSON state files and then cleaned up together with any SQLite sidecar files that remain.
 - Runtime logs: written by `pino` to `~/.telecodex/logs/telecodex.log`.
 - Working directory: defaults to the directory where you ran `telecodex`.
 
@@ -149,8 +155,9 @@ Optional security override:
 - `/project bind <absolute-path>` - bind the current supergroup to a project root.
 - `/project unbind` - remove the current supergroup's project binding.
 - `/thread` - in a topic, show the current attached thread id.
+- `/thread list` - list saved Codex threads whose working directory is inside the current project root.
 - `/thread new <topic-name>` - create a new topic for a fresh Codex thread.
-- `/thread resume <threadId>` - create a new topic and bind it to an existing Codex thread id.
+- `/thread resume <threadId>` - create a new topic and bind it to an existing saved Codex thread id from the current project.
 - Normal text in a topic - send that message to the current Codex thread.
 - `/stop` - interrupt the active SDK run.
 - `/cwd <absolute-path>` - switch the topic working directory inside the current project root.
@@ -174,6 +181,6 @@ Optional security override:
 - Streaming updates are throttled before editing Telegram messages.
 - Final answers are rendered from Markdown to Telegram-safe HTML.
 - Project-scoped path checks resolve symlinks before enforcing the root boundary, so topic cwd changes cannot escape the bound project through symlink paths.
-- Because the SDK run is in-process, a telecodex restart cannot resume a partially streamed Telegram turn; the topic is reset and the user is asked to resend.
+- Because the SDK run and pending queue are in-process, a telecodex restart cannot resume a partially streamed Telegram turn and clears queued follow-up messages.
 - Authentication and provider switching remain owned by the local Codex installation; telecodex does not manage API keys or login state.
 - Interactive terminal stdin bridging and native Codex approval UI are intentionally not part of the Telegram contract. For unattended remote work, use the topic's sandbox/approval preset deliberately.

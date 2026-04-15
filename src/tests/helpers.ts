@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { CodexThreadCatalog, CodexThreadSummary } from "../codex/sessionCatalog.js";
 import type { Logger } from "../runtime/logger.js";
-import { openDatabase } from "../store/db.js";
+import { FileStateStorage } from "../store/fileState.js";
 import { ProjectStore } from "../store/projects.js";
 import { SessionStore } from "../store/sessions.js";
 
@@ -11,10 +12,9 @@ export function createTestSessionStore(): {
   cleanup: () => void;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-test-"));
-  const dbPath = path.join(dir, "state.sqlite");
-  const db = openDatabase(dbPath);
+  const storage = new FileStateStorage(path.join(dir, "state"));
   return {
-    store: new SessionStore(db),
+    store: new SessionStore(storage),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -25,11 +25,10 @@ export function createTestStores(): {
   cleanup: () => void;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-test-"));
-  const dbPath = path.join(dir, "state.sqlite");
-  const db = openDatabase(dbPath);
+  const storage = new FileStateStorage(path.join(dir, "state"));
   return {
-    store: new SessionStore(db),
-    projects: new ProjectStore(db),
+    store: new SessionStore(storage),
+    projects: new ProjectStore(storage),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -43,6 +42,35 @@ export function createNoopLogger(): Logger {
     warn: () => undefined,
     error: () => undefined,
     flush: () => undefined,
+  };
+}
+
+export function createFakeThreadCatalog(initialThreads: CodexThreadSummary[] = []): CodexThreadCatalog & {
+  setThreads: (threads: CodexThreadSummary[]) => void;
+} {
+  let threads = [...initialThreads];
+
+  return {
+    setThreads(nextThreads: CodexThreadSummary[]) {
+      threads = [...nextThreads];
+    },
+    async listProjectThreads(input) {
+      const projectRoot = path.resolve(input.projectRoot);
+      const limit = Math.max(1, input.limit ?? threads.length ?? 1);
+      return threads
+        .filter((thread) => thread.cwd === projectRoot || thread.cwd.startsWith(`${projectRoot}${path.sep}`))
+        .slice(0, limit);
+    },
+    async findProjectThreadById(input) {
+      const projectRoot = path.resolve(input.projectRoot);
+      return (
+        threads.find(
+          (thread) =>
+            thread.id === input.threadId &&
+            (thread.cwd === projectRoot || thread.cwd.startsWith(`${projectRoot}${path.sep}`)),
+        ) ?? null
+      );
+    },
   };
 }
 
@@ -148,6 +176,12 @@ export function createFakeHandlerBot() {
 
   const bot = {
     api,
+    use(_middleware: unknown) {
+      return this;
+    },
+    catch(_handler: unknown) {
+      return this;
+    },
     command(command: string | string[], handler: (ctx: any) => Promise<unknown>) {
       for (const name of Array.isArray(command) ? command : [command]) {
         commands.set(name, handler);

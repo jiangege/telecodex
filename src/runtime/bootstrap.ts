@@ -14,10 +14,11 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import { buildConfig, type AppConfig } from "../config.js";
-import { openDatabase } from "../store/db.js";
+import { FileStateStorage } from "../store/fileState.js";
+import { migrateLegacySqliteState } from "../store/legacyMigration.js";
 import { ProjectStore } from "../store/projects.js";
 import { BINDING_CODE_MAX_ATTEMPTS, SessionStore } from "../store/sessions.js";
-import { getStateDbPath } from "./appPaths.js";
+import { getLegacyStateDbPath, getStateDir } from "./appPaths.js";
 import { generateBindingCode } from "./bindingCodes.js";
 import {
   PLAINTEXT_TOKEN_FALLBACK_ENV,
@@ -38,10 +39,14 @@ export interface BootstrapResult {
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   intro("telecodex");
 
-  const dbPath = getStateDbPath();
-  const db = openDatabase(dbPath);
-  const store = new SessionStore(db);
-  const projects = new ProjectStore(db);
+  const stateDir = getStateDir();
+  const storage = new FileStateStorage(stateDir);
+  migrateLegacySqliteState({
+    storage,
+    legacyDbPath: getLegacyStateDbPath(),
+  });
+  const store = new SessionStore(storage);
+  const projects = new ProjectStore(storage);
   const secrets = new SecretStore(store, {
     allowPlaintextFallback: process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
   });
@@ -57,7 +62,6 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   const config = buildConfig({
     telegramBotToken: token,
     defaultCwd: process.cwd(),
-    dbPath,
     codexBin,
   });
 

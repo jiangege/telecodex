@@ -5,7 +5,7 @@ import test from "node:test";
 import type { AppConfig } from "../config.js";
 import { registerHandlers } from "../bot/registerHandlers.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
-import { createFakeHandlerBot, createNoopLogger, createTestStores } from "./helpers.js";
+import { createFakeHandlerBot, createFakeThreadCatalog, createNoopLogger, createTestStores } from "./helpers.js";
 
 class DeferredCodexRuntime {
   calls: Array<{
@@ -159,6 +159,7 @@ test("e2e topic flow creates a project topic, runs Codex, and reports status", a
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -216,6 +217,7 @@ test("e2e topic flow queues follow-up messages and drains them after the active 
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -252,12 +254,25 @@ test("e2e topic flow resumes an existing thread id", async () => {
   const codex = new DeferredCodexRuntime();
 
   try {
+    harness.threadCatalog.setThreads([
+      {
+        id: "thread-existing-777",
+        cwd: process.cwd(),
+        createdAt: "2026-04-15T00:00:00.000Z",
+        updatedAt: "2026-04-15T01:00:00.000Z",
+        preview: "Existing thread 777",
+        source: "cli",
+        modelProvider: "openai",
+        sessionPath: "/tmp/thread-existing-777.jsonl",
+      },
+    ]);
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -293,6 +308,7 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -328,6 +344,7 @@ test("e2e status recovers stale in-memory running state", async () => {
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -366,6 +383,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -452,6 +470,7 @@ test("e2e queue commands drop and clear pending messages", async () => {
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -500,6 +519,7 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
       store: harness.store,
       projects: harness.projects,
       codex: codex as never,
+      threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
     });
 
@@ -536,11 +556,11 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
 function createHarness() {
   const { bot, commands, events, sent, edited, chatActions, createdTopics } = createFakeHandlerBot();
   const stores = createTestStores();
+  const threadCatalog = createFakeThreadCatalog();
   const config: AppConfig = {
     telegramBotToken: "test-token",
     defaultCwd: process.cwd(),
     defaultModel: "gpt-5.4",
-    dbPath: "/tmp/telecodex-e2e.sqlite",
     codexBin: "codex",
     updateIntervalMs: 1,
   };
@@ -555,6 +575,7 @@ function createHarness() {
     edited,
     chatActions,
     createdTopics,
+    threadCatalog,
     config,
     buffers,
   };

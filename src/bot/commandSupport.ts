@@ -68,6 +68,7 @@ export function formatHelpText(ctx: Context, projects: ProjectStore): string {
       "/project bind <absolute-path>",
       "",
       "Then manage threads in the group:",
+      "/thread list",
       "/thread new <topic-name>",
       "/thread resume <threadId>",
       "",
@@ -103,6 +104,7 @@ export function formatHelpText(ctx: Context, projects: ProjectStore): string {
     "",
     "/project show the project binding",
     "/project bind <absolute-path> update the project root",
+    "/thread list show saved Codex threads already recorded for this project",
     "/thread new <topic-name> create a new topic; the first message starts a new thread",
     "/thread resume <threadId> create a topic bound to an existing thread",
     "send a normal message inside a topic to the current thread",
@@ -162,7 +164,7 @@ export function formatProjectStatus(project: ProjectBinding): string {
     "Project status",
     `project: ${project.name}`,
     `root: ${project.cwd}`,
-    "This supergroup represents one project. Use /thread new or /thread resume to create topics.",
+    "This supergroup represents one project. Use /thread list, /thread new, or /thread resume to manage topics.",
   ].join("\n");
 }
 

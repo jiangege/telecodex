@@ -1,6 +1,7 @@
 import { run } from "@grammyjs/runner";
 import type { CodexOptions } from "@openai/codex-sdk";
 import { createBot } from "../bot/createBot.js";
+import { CodexSessionCatalog } from "../codex/sessionCatalog.js";
 import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import { bootstrapRuntime } from "./bootstrap.js";
 import { acquireInstanceLock, type InstanceLock } from "./instanceLock.js";
@@ -34,11 +35,15 @@ export async function startTelecodex(): Promise<void> {
       logger: logger.child("codex-sdk"),
       ...(configOverrides ? { configOverrides } : {}),
     });
+    const threadCatalog = new CodexSessionCatalog({
+      logger: logger.child("codex-sessions"),
+    });
     const bot = createBot({
       config,
       store,
       projects,
       codex,
+      threadCatalog,
       bootstrapCode,
       logger: logger.child("bot"),
       onAdminBound: () => {

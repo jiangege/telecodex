@@ -24,7 +24,6 @@ export interface AppConfig {
   telegramBotToken: string;
   defaultCwd: string;
   defaultModel: string;
-  dbPath: string;
   codexBin: string;
   updateIntervalMs: number;
 }
@@ -38,7 +37,6 @@ export function buildConfig(input: {
   telegramBotToken: string;
   defaultCwd?: string;
   defaultModel?: string;
-  dbPath: string;
   codexBin: string;
   updateIntervalMs?: number;
 }): AppConfig {
@@ -47,7 +45,6 @@ export function buildConfig(input: {
     telegramBotToken: input.telegramBotToken,
     defaultCwd,
     defaultModel: input.defaultModel?.trim() || "gpt-5.4",
-    dbPath: path.resolve(input.dbPath),
     codexBin: input.codexBin,
     updateIntervalMs: input.updateIntervalMs ?? 700,
   };

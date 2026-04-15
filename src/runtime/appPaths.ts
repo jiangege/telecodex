@@ -5,7 +5,11 @@ export function getAppHome(): string {
   return path.join(homedir(), ".telecodex");
 }
 
-export function getStateDbPath(): string {
+export function getStateDir(): string {
+  return path.join(getAppHome(), "state");
+}
+
+export function getLegacyStateDbPath(): string {
   return path.join(getAppHome(), "state.sqlite");
 }
 

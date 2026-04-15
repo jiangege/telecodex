@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
 import type { AppConfig } from "../config.js";
+import type { CodexThreadCatalog } from "../codex/sessionCatalog.js";
 import type { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import type { Logger } from "../runtime/logger.js";
 import type { ProjectStore } from "../store/projects.js";
@@ -8,6 +9,7 @@ import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { authMiddleware } from "./auth.js";
 import { recoverActiveTopicSessions } from "./inputService.js";
 import { registerHandlers } from "./registerHandlers.js";
+import { cleanupMissingTopicBindings } from "./topicCleanup.js";
 
 export { handleUserText, refreshSessionIfActiveTurnIsStale } from "./inputService.js";
 
@@ -17,6 +19,7 @@ export function wireBot(input: {
   store: SessionStore;
   projects: ProjectStore;
   codex: CodexSdkRuntime;
+  threadCatalog: CodexThreadCatalog;
   bootstrapCode: string | null;
   logger?: Logger;
   onAdminBound?: (userId: number) => void;
@@ -24,7 +27,7 @@ export function wireBot(input: {
   bot: Bot;
   buffers: MessageBuffer;
 } {
-  const { bot, config, store, projects, codex, bootstrapCode, logger, onAdminBound } = input;
+  const { bot, config, store, projects, codex, threadCatalog, bootstrapCode, logger, onAdminBound } = input;
   const buffers = new MessageBuffer(bot, config.updateIntervalMs, logger?.child("message-buffer"));
 
   bot.use(
@@ -54,11 +57,24 @@ export function wireBot(input: {
     store,
     projects,
     codex,
+    threadCatalog,
     buffers,
     ...(logger ? { logger } : {}),
   });
 
-  void recoverActiveTopicSessions(store, codex, buffers, bot, logger);
+  void (async () => {
+    try {
+      await cleanupMissingTopicBindings({
+        bot,
+        store,
+        ...(logger ? { logger: logger.child("topic-cleanup") } : {}),
+      });
+      await recoverActiveTopicSessions(store, codex, buffers, bot, logger);
+    } catch (error) {
+      logger?.error("startup topic reconciliation failed", error);
+    }
+  })();
+
   return {
     bot,
     buffers,
@@ -70,6 +86,7 @@ export function createBot(input: {
   store: SessionStore;
   projects: ProjectStore;
   codex: CodexSdkRuntime;
+  threadCatalog: CodexThreadCatalog;
   bootstrapCode: string | null;
   logger?: Logger;
   onAdminBound?: (userId: number) => void;
