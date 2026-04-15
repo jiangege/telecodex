@@ -1,186 +1,151 @@
 # telecodex
 
-Telegram bridge for local Codex built on the official TypeScript SDK.
+Use Telegram forum topics as a remote interface for local Codex.
 
-## Model
-
-```text
-Telegram private chat
-  -> one-time admin bootstrap
-
-Telegram forum supergroup
-  -> one project per supergroup
-  -> one topic per Codex thread
-
-Telegram
-  -> grammY bot + runner
-  -> CodexSdkRuntime
-  -> @openai/codex-sdk
-  -> local Codex login
-```
-
-The bot talks to local Codex through `@openai/codex-sdk`, which wraps the local
-`codex` CLI. It does not depend on `codex app-server`.
-
-## Runtime contract
-
-- Telegram is treated as a remote task interface, not a clone of Codex Desktop.
-- One topic maps to one Codex SDK thread.
-- Each topic has at most one active SDK run.
-- Follow-up messages during an active run are queued and processed in order.
-- The pending queue is in-memory only and is cleared on restart.
-- Text and image messages are mapped to Codex SDK input.
-- A run immediately creates a normal Telegram status message; progress edits that message.
-- telecodex does not use pinned messages for live state.
-- While a run is pending, the bot sends Telegram `typing` activity so the chat does not look dead during long SDK gaps.
-- `/status` is the source of truth for runtime state, active thread id, last SDK event, and queue depth.
+`telecodex` connects a Telegram bot to your local `codex` CLI through the
+official TypeScript SDK. It is meant for remote task execution, not as a full
+clone of Codex Desktop.
 
 ## Requirements
 
-- Node.js 24 or newer.
-- A local `codex` CLI installation available on `PATH`.
-- A valid local Codex login:
+- Node.js 24 or newer
+- A local `codex` CLI installation available on `PATH`
+- A valid local Codex login
+- A Telegram bot token
+
+Check Codex login first:
 
 ```bash
 codex login status
 ```
 
-- A Telegram bot token.
-
-## Install from npm
+## Install
 
 ```bash
 npm install -g telecodex
 telecodex
 ```
 
-`telecodex` uses the local `codex` CLI at runtime, so installing this package
-does not replace the separate Codex CLI installation.
+Installing `telecodex` does not replace the separate `codex` CLI. The bot uses
+your local Codex installation at runtime.
 
-## Local development
-
-1. Install dependencies:
-
-```bash
-npm install
-```
-
-2. Start it:
-
-```bash
-npm run dev
-```
-
-For a production-style local install during development, `npm link` exposes the
-same `telecodex` command globally from the current checkout.
-
-## Automated npm release
-
-This repository is set up for npm trusted publishing from GitHub Actions.
-
-1. On npm, open the `telecodex` package settings and configure a trusted publisher:
-   - Organization or user: `jiangege`
-   - Repository: `telecodex`
-   - Workflow filename: `publish.yml`
-2. Bump the version locally:
-
-```bash
-npm version patch
-```
-
-3. Push the branch and tag:
-
-```bash
-git push origin main --follow-tags
-```
-
-Pushing a `v*` tag runs `.github/workflows/publish.yml`, which installs dependencies,
-runs `npm run check`, runs `npm test`, and publishes the package to npm when the tag
-matches the version in `package.json`.
-
-## First launch
+## First Launch
 
 On first launch, `telecodex`:
 
 1. Finds or asks for the local `codex` binary path.
-2. Verifies Codex login.
-3. Asks for a Telegram bot token if none is stored yet.
+2. Verifies local Codex login.
+3. Prompts for a Telegram bot token if none is stored yet.
 4. Generates a one-time bootstrap code if no Telegram admin is bound yet.
-5. Waits for that code in a private chat. The first successful sender becomes the permanent admin for this bot instance.
+5. Waits for that code in a private Telegram chat with the bot.
 
-Bootstrap codes are time-limited and attempt-limited. When a code expires or is exhausted, start telecodex again locally to issue a fresh one.
-
-There are no required environment variables in the normal startup path.
+The first successful sender becomes the admin for that bot instance.
 
 Optional security override:
 
-- `TELECODEX_ALLOW_PLAINTEXT_TOKEN_FALLBACK=1` allows storing the Telegram bot token unencrypted in local state when the system keychain is unavailable. This is disabled by default.
+- `TELECODEX_ALLOW_PLAINTEXT_TOKEN_FALLBACK=1` allows storing the Telegram bot
+  token unencrypted in local state when the system keychain is unavailable.
+  This is disabled by default.
 
-## Working model
+## How It Works
 
-- Private chat is only for bootstrap and lightweight management.
-- One forum supergroup represents one project.
-- The project root is bound once with `/project bind <absolute-path>`.
-- Each topic in that supergroup is one Codex thread.
+- One Telegram forum supergroup represents one project.
+- One topic inside that supergroup represents one Codex thread.
 - Work happens by sending normal messages inside the topic.
-- `/thread list` shows the saved Codex threads already recorded for the bound project root or its subdirectories.
-- `/thread new <topic-name>` automatically creates a new topic; the first normal message inside it starts a fresh Codex thread.
-- `/thread resume <threadId>` automatically creates a new topic and binds it to an existing thread id.
-- On startup, telecodex probes stored topic bindings once and removes bindings whose Telegram topics no longer exist.
-- On first launch after upgrading from the old SQLite state format, telecodex imports the legacy state once and then deletes the old SQLite files (`state.sqlite` plus sidecars such as `-wal`/`-shm`).
+- While a run is active, follow-up messages are queued automatically.
+- `/status` shows the current runtime state.
 
-## Stored state
+Private chat is only for bootstrap and lightweight admin actions.
 
-- Telegram bot token: stored in the system keychain when available. Plaintext local fallback is disabled by default and must be opted into explicitly.
-- Codex thread history: read directly from Codex session files under `$CODEX_HOME/sessions` (or `~/.codex/sessions` by default).
-- Admin binding, project bindings, and durable Telegram topic configuration: stored as local JSON files under `~/.telecodex/state/`.
-- Legacy upgrade path: if `~/.telecodex/state.sqlite` exists from an older telecodex version, it is imported once into the JSON state files and then cleaned up together with any SQLite sidecar files that remain.
-- Runtime logs: written by `pino` to `~/.telecodex/logs/telecodex.log`.
-- Working directory: defaults to the directory where you ran `telecodex`.
+## Quick Start
 
-## Logs
+Inside a Telegram forum supergroup:
 
-- Startup prints the active log file path.
-- Telegram middleware errors and message edit failures are appended to the log file.
-- When you need to debug a running instance later, inspect `~/.telecodex/logs/telecodex.log` first.
+1. Bind the group to a project root:
+
+```text
+/project bind /absolute/path/to/project
+```
+
+2. Create a fresh topic for a new Codex thread:
+
+```text
+/thread new My Task
+```
+
+3. Or resume an existing thread:
+
+```text
+/thread list
+/thread resume <threadId>
+```
+
+4. Send normal messages in the topic to work with Codex.
 
 ## Commands
 
-- `/start` or `/help` - show the current usage model.
-- `/status` - in private chat shows global state; in a project topic shows project/thread runtime state.
-- `/admin` - in private chat, show admin binding and handoff status.
-- `/admin rebind` - in private chat, issue a time-limited handoff code for transferring control to another Telegram account.
-- `/admin cancel` - in private chat, cancel a pending admin handoff code.
-- `/project` - show the current supergroup's project binding.
-- `/project bind <absolute-path>` - bind the current supergroup to a project root.
-- `/project unbind` - remove the current supergroup's project binding.
-- `/thread` - in a topic, show the current attached thread id.
-- `/thread list` - list saved Codex threads whose working directory is inside the current project root.
-- `/thread new <topic-name>` - create a new topic for a fresh Codex thread.
-- `/thread resume <threadId>` - create a new topic and bind it to an existing saved Codex thread id from the current project.
-- Normal text in a topic - send that message to the current Codex thread.
-- `/stop` - interrupt the active SDK run.
-- `/cwd <absolute-path>` - switch the topic working directory inside the current project root.
-- `/mode read|write|danger|yolo` - switch runtime presets for the current topic.
-- `/sandbox <read-only|workspace-write|danger-full-access>` - set sandbox explicitly for the current topic.
-- `/approval <on-request|on-failure|never>` - set approval policy explicitly for the current topic.
-- `/yolo on|off` - quick toggle for `danger-full-access + never` on the current topic.
-- `/model <model-id>` - set model for the current topic.
-- `/effort default|minimal|low|medium|high|xhigh` - set model reasoning effort for the current topic.
-- `/web default|disabled|cached|live` - set Codex SDK web search mode.
-- `/network on|off` - set workspace network access for Codex SDK runs.
-- `/gitcheck skip|enforce` - control Codex SDK git repository checks.
-- `/adddir list|add <path-inside-project>|add-external <absolute-path>|drop <index>|clear` - manage Codex SDK additional directories. `add` stays inside the project root; `add-external` is the explicit escape hatch.
-- `/schema show|set <JSON object>|clear` - manage Codex SDK output schema for the current topic.
-- `/codexconfig show|set <JSON object>|clear` - manage global non-auth Codex SDK config overrides for future runs.
-- Image messages in a topic - download the Telegram image locally and send it as SDK `local_image` input.
+### General
 
-## Notes
+- `/start` or `/help` - show usage help
+- `/status` - show current state
+- `/stop` - interrupt the active run in the current topic
 
-- Long polling is managed by `@grammyjs/runner`.
-- Streaming updates are throttled before editing Telegram messages.
-- Final answers are rendered from Markdown to Telegram-safe HTML.
-- Project-scoped path checks resolve symlinks before enforcing the root boundary, so topic cwd changes cannot escape the bound project through symlink paths.
-- Because the SDK run and pending queue are in-process, a telecodex restart cannot resume a partially streamed Telegram turn and clears queued follow-up messages.
-- Authentication and provider switching remain owned by the local Codex installation; telecodex does not manage API keys or login state.
-- Interactive terminal stdin bridging and native Codex approval UI are intentionally not part of the Telegram contract. For unattended remote work, use the topic's sandbox/approval preset deliberately.
+### Admin
+
+- `/admin` - show admin binding and handoff state
+- `/admin rebind` - issue a temporary handoff code
+- `/admin cancel` - cancel a pending handoff
+
+### Project
+
+- `/project` - show the current project binding
+- `/project bind <absolute-path>` - bind the current supergroup to a project root
+- `/project unbind` - remove the project binding
+
+### Threads
+
+- `/thread` - show the current attached thread id in a topic
+- `/thread list` - list saved Codex threads for the current project
+- `/thread new <topic-name>` - create a fresh topic for a new thread
+- `/thread resume <threadId>` - create a topic and bind it to an existing thread
+
+### Session Configuration
+
+- `/cwd <absolute-path>`
+- `/mode read|write|danger|yolo`
+- `/sandbox <read-only|workspace-write|danger-full-access>`
+- `/approval <on-request|on-failure|never>`
+- `/yolo on|off`
+- `/model <model-id>`
+- `/effort default|minimal|low|medium|high|xhigh`
+- `/web default|disabled|cached|live`
+- `/network on|off`
+- `/gitcheck skip|enforce`
+- `/adddir list|add <path-inside-project>|add-external <absolute-path>|drop <index>|clear`
+- `/schema show|set <JSON object>|clear`
+- `/codexconfig show|set <JSON object>|clear`
+
+## Images
+
+- Sending an image in a topic is supported.
+- Telegram photos and image documents are downloaded locally and sent to Codex as
+  `local_image` input.
+- Image output is not rendered inline in Telegram text messages.
+
+## Storage
+
+- Telegram bot token: stored in the system keychain when available
+- Durable local state: `~/.telecodex/state/`
+- Runtime logs: `~/.telecodex/logs/telecodex.log`
+- Codex thread history: read from Codex session files under `$CODEX_HOME/sessions`
+  (or `~/.codex/sessions` by default)
+
+If an older `~/.telecodex/state.sqlite` exists, telecodex imports it once into
+the JSON state files and then removes the old SQLite files.
+
+## Troubleshooting
+
+- If startup reports a login problem, run `codex login`.
+- If the bot appears idle for a long time, check `/status`.
+- If you need logs, inspect `~/.telecodex/logs/telecodex.log`.
+
