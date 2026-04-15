@@ -202,7 +202,7 @@ test("e2e topic flow creates a project topic, runs Codex, and reports status", a
     assert.match(status, /active run: none/);
     assert.match(status, /queue: 0/);
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -232,7 +232,12 @@ test("e2e topic flow queues follow-up messages and drains them after the active 
 
     await runTextMessage(harness, topicId, "second task");
     assert.equal(harness.store.getQueuedInputCount(sessionKey), 1);
-    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Your message was added to the queue")));
+    const queuedNotice = harness.sent.find(
+      (entry) => entry.messageThreadId === topicId && entry.text.includes("Your message was added to the queue"),
+    );
+    assert.ok(queuedNotice);
+    assert.equal(queuedNotice?.options?.parse_mode, undefined);
+    assert.deepEqual(queuedNotice?.options?.link_preview_options, { is_disabled: true });
 
     codex.calls[0]!.release();
     await waitFor(() => codex.calls.length === 2 && codex.isRunning(sessionKey));
@@ -245,7 +250,7 @@ test("e2e topic flow queues follow-up messages and drains them after the active 
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: first task")));
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: second task")));
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -293,7 +298,7 @@ test("e2e topic flow resumes an existing thread id", async () => {
     assert.equal(session?.codexThreadId, "thread-existing-777");
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: continue previous work")));
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -324,12 +329,20 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
     const replies = await runCommand(harness, "stop", "", topicId);
     assert.match(replies.at(-1) ?? "", /Interrupt requested for the current run/);
     await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle" && !codex.isRunning(sessionKey));
+    await waitFor(
+      () =>
+        harness.edited.some((entry) => entry.text.includes("Current run interrupted")) ||
+        harness.sent.some((entry) => entry.text.includes("Current run interrupted")),
+    );
 
-    assert.ok(harness.edited.some((entry) => entry.text.includes("Current run interrupted")));
+    assert.ok(
+      harness.edited.some((entry) => entry.text.includes("Current run interrupted")) ||
+      harness.sent.some((entry) => entry.text.includes("Current run interrupted")),
+    );
     assert.equal(harness.store.get(sessionKey)?.activeTurnId, null);
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -368,7 +381,7 @@ test("e2e status recovers stale in-memory running state", async () => {
     assert.match(status, /active turn: none/);
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -455,7 +468,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
     codex.calls[0]!.release();
     await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle");
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -501,7 +514,43 @@ test("e2e queue commands drop and clear pending messages", async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepEqual(codex.calls.map((call) => call.prompt), ["active task"]);
   } finally {
-    harness.cleanup();
+    await harness.cleanup();
+  }
+});
+
+test("e2e runs clear an invalid stored output schema and continue without it", async () => {
+  const harness = createHarness();
+  const codex = new DeferredCodexRuntime();
+
+  try {
+    registerHandlers({
+      bot: harness.bot,
+      config: harness.config,
+      store: harness.store,
+      projects: harness.projects,
+      codex: codex as never,
+      threadCatalog: harness.threadCatalog,
+      buffers: harness.buffers,
+    });
+
+    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "thread", "new Broken Schema");
+    const topicId = harness.createdTopics[0]?.messageThreadId;
+    assert.ok(topicId);
+    const sessionKey = `-100:${topicId}`;
+
+    harness.store.setOutputSchema(sessionKey, "{broken-json");
+
+    await runTextMessage(harness, topicId, "recover from broken schema");
+    await waitFor(() => codex.calls.length === 1);
+
+    assert.equal(codex.calls[0]?.profile.outputSchema, undefined);
+    assert.equal(harness.store.get(sessionKey)?.outputSchema, null);
+
+    codex.calls[0]!.release();
+    await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle");
+  } finally {
+    await harness.cleanup();
   }
 });
 
@@ -549,7 +598,7 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
     if (imagePath) rmSync(imagePath, { force: true });
   } finally {
     global.fetch = originalFetch;
-    harness.cleanup();
+    await harness.cleanup();
   }
 });
 
@@ -578,6 +627,11 @@ function createHarness() {
     threadCatalog,
     config,
     buffers,
+    cleanup: async () => {
+      buffers.dispose();
+      await stores.store.flush();
+      stores.cleanup();
+    },
   };
 }
 

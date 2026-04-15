@@ -8,15 +8,16 @@ import {
   formatProjectStatus,
   formatTopicName,
   getProjectForContext,
-  getScopedSession,
   hasTopicContext,
   isPrivateChat,
   isSupergroupChat,
   parseSubcommand,
   postTopicReadyMessage,
+  requireScopedSession,
   resolveExistingDirectory,
 } from "../commandSupport.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
+import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
 
 const PROJECT_REQUIRED_MESSAGE = "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.";
 type ProjectCommandContext = CommandContext<Context>;
@@ -29,27 +30,27 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
 
     if (isPrivateChat(ctx)) {
       if (!command || command === "list" || command === "status") {
-        await ctx.reply(formatPrivateProjectList(projects));
+        await replyNotice(ctx, formatPrivateProjectList(projects));
         return;
       }
-      await ctx.reply("Use /project bind inside a supergroup with topics enabled. Private chat is only for admin entry points.");
+      await replyNotice(ctx, "Use /project bind inside a supergroup with topics enabled. Private chat is only for admin entry points.");
       return;
     }
 
     if (!isSupergroupChat(ctx)) {
-      await ctx.reply("Use telecodex inside a supergroup with forum topics enabled.");
+      await replyNotice(ctx, "Use telecodex inside a supergroup with forum topics enabled.");
       return;
     }
 
     if (!command || command === "status") {
       const project = getProjectForContext(ctx, projects);
-      await ctx.reply(project ? formatProjectStatus(project) : PROJECT_REQUIRED_MESSAGE);
+      await replyNotice(ctx, project ? formatProjectStatus(project) : PROJECT_REQUIRED_MESSAGE);
       return;
     }
 
     if (command === "bind") {
       if (!args) {
-        await ctx.reply("Usage: /project bind <absolute-path>");
+        await replyUsage(ctx, "/project bind <absolute-path>");
         return;
       }
       try {
@@ -63,20 +64,20 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
           project: project.name,
           cwd: project.cwd,
         });
-        const session = getScopedSession(ctx, store, projects, config, { requireTopic: false });
+        const session = await requireScopedSession(ctx, store, projects, config, { requireTopic: false });
         if (session && session.cwd !== project.cwd) {
           store.setCwd(session.sessionKey, project.cwd);
         }
-        await ctx.reply(
-          [
-            "Project binding updated.",
-            `project: ${project.name}`,
-            `root: ${project.cwd}`,
-            "This supergroup now represents one project, and each topic maps to one Codex thread.",
-          ].join("\n"),
-        );
+        await replyDocument(ctx, {
+          title: "Project binding updated.",
+          fields: [
+            codeField("project", project.name),
+            codeField("root", project.cwd),
+          ],
+          footer: "This supergroup now represents one project, and each topic maps to one Codex thread.",
+        });
       } catch (error) {
-        await ctx.reply(error instanceof Error ? error.message : String(error));
+        await replyError(ctx, error instanceof Error ? error.message : String(error));
       }
       return;
     }
@@ -86,40 +87,38 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         ...contextLogFields(ctx),
       });
       projects.remove(String(ctx.chat.id));
-      await ctx.reply("Removed the project binding for this supergroup.");
+      await replyNotice(ctx, "Removed the project binding for this supergroup.");
       return;
     }
 
-    await ctx.reply("Usage:\n/project\n/project bind <absolute-path>\n/project unbind");
+    await replyUsage(ctx, ["/project", "/project bind <absolute-path>", "/project unbind"]);
   });
 
   bot.command("thread", async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await ctx.reply("The thread command is only available inside project supergroups.");
+      await replyNotice(ctx, "The thread command is only available inside project supergroups.");
       return;
     }
 
     const { command, args } = parseSubcommand(ctx.match.trim());
     if (!command) {
       if (hasTopicContext(ctx)) {
-        const session = getScopedSession(ctx, store, projects, config);
+        const session = await requireScopedSession(ctx, store, projects, config);
         if (!session) return;
-        await ctx.reply(
-          [
-            `Current thread: ${session.codexThreadId ?? "not created"}`,
-            `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
-            `state detail: ${session.runtimeStatusDetail ?? "none"}`,
-            `queue: ${store.getQueuedInputCount(session.sessionKey)}`,
-            `cwd: ${session.cwd}`,
-            "Manage threads in this project:",
-            "/thread list",
-            "/thread resume <threadId>",
-            "/thread new <topic-name>",
-          ].join("\n"),
-        );
+        await replyDocument(ctx, {
+          title: "Current thread",
+          fields: [
+            codeField("thread", session.codexThreadId ?? "not created"),
+            textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
+            textField("state detail", session.runtimeStatusDetail ?? "none"),
+            textField("queue", store.getQueuedInputCount(session.sessionKey)),
+            codeField("cwd", session.cwd),
+          ],
+          footer: ["Manage threads in this project:", "/thread list", "/thread resume <threadId>", "/thread new <topic-name>"],
+        });
         return;
       }
-      await ctx.reply("Usage:\n/thread list\n/thread resume <threadId>\n/thread new <topic-name>");
+      await replyUsage(ctx, ["/thread list", "/thread resume <threadId>", "/thread new <topic-name>"]);
       return;
     }
 
@@ -129,7 +128,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
     }
     if (command === "resume") {
       if (!args) {
-        await ctx.reply("Usage: /thread resume <threadId>");
+        await replyUsage(ctx, "/thread resume <threadId>");
         return;
       }
       await resumeThreadIntoTopic(ctx, deps, args);
@@ -140,7 +139,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    await ctx.reply("Usage:\n/thread list\n/thread resume <threadId>\n/thread new <topic-name>");
+    await replyUsage(ctx, ["/thread list", "/thread resume <threadId>", "/thread new <topic-name>"]);
   });
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
@@ -166,7 +165,7 @@ async function resumeThreadIntoTopic(
   const { bot, config, store, projects, logger, threadCatalog } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
-    await ctx.reply(PROJECT_REQUIRED_MESSAGE);
+    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
     return;
   }
 
@@ -175,14 +174,14 @@ async function resumeThreadIntoTopic(
     threadId,
   });
   if (!thread) {
-    await ctx.reply(
-      [
-        "Could not find a saved Codex thread with that id under this project.",
-        `project root: ${project.cwd}`,
-        `thread: ${threadId}`,
-        "Run /thread list to inspect the saved project threads first.",
-      ].join("\n"),
-    );
+    await replyDocument(ctx, {
+      title: "Could not find a saved Codex thread with that id under this project.",
+      fields: [
+        codeField("project root", project.cwd),
+        codeField("thread", threadId),
+      ],
+      footer: "Run /thread list to inspect the saved project threads first.",
+    });
     return;
   }
 
@@ -205,16 +204,16 @@ async function resumeThreadIntoTopic(
     topicName: forumTopic.name,
   });
 
-  await ctx.reply(
-    [
-      "Created a topic and bound it to the existing thread id.",
-      `topic: ${forumTopic.name}`,
-      `topic id: ${forumTopic.message_thread_id}`,
-      `thread: ${thread.id}`,
-      `cwd: ${thread.cwd}`,
-      "Future messages in this topic will continue on that thread through the Codex SDK.",
-    ].join("\n"),
-  );
+  await replyDocument(ctx, {
+    title: "Created a topic and bound it to the existing thread id.",
+    fields: [
+      textField("topic", forumTopic.name),
+      textField("topic id", forumTopic.message_thread_id),
+      codeField("thread", thread.id),
+      codeField("cwd", thread.cwd),
+    ],
+    footer: "Future messages in this topic will continue on that thread through the Codex SDK.",
+  });
 
   await postTopicReadyMessage(
     bot,
@@ -235,7 +234,7 @@ async function createFreshThreadTopic(
   const { bot, config, store, projects, logger } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
-    await ctx.reply(PROJECT_REQUIRED_MESSAGE);
+    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
     return;
   }
 
@@ -256,14 +255,14 @@ async function createFreshThreadTopic(
     topicName: forumTopic.name,
   });
 
-  await ctx.reply(
-    [
-      "Created a new topic.",
-      `topic: ${forumTopic.name}`,
-      `topic id: ${forumTopic.message_thread_id}`,
-      "Your first normal message will start a new Codex SDK thread.",
-    ].join("\n"),
-  );
+  await replyDocument(ctx, {
+    title: "Created a new topic.",
+    fields: [
+      textField("topic", forumTopic.name),
+      textField("topic id", forumTopic.message_thread_id),
+    ],
+    footer: "Your first normal message will start a new Codex SDK thread.",
+  });
 
   await postTopicReadyMessage(
     bot,
@@ -281,7 +280,7 @@ async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDe
   const { projects, store, threadCatalog } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
-    await ctx.reply(PROJECT_REQUIRED_MESSAGE);
+    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
     return;
   }
 
@@ -290,33 +289,36 @@ async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDe
     limit: 8,
   });
   if (threads.length === 0) {
-    await ctx.reply(
-      [
-        "No saved Codex threads were found for this project yet.",
-        `project root: ${project.cwd}`,
-      ].join("\n"),
-    );
+    await replyDocument(ctx, {
+      title: "No saved Codex threads were found for this project yet.",
+      fields: [codeField("project root", project.cwd)],
+    });
     return;
   }
 
-  const lines = [
-    `Saved Codex threads for ${project.name}:`,
-    ...threads.flatMap((thread, index) => {
+  await replyDocument(ctx, {
+    title: "Saved Codex threads",
+    fields: [
+      codeField("project", project.name),
+      codeField("root", project.cwd),
+    ],
+    sections: threads.map((thread, index) => {
       const relativeCwd = path.relative(project.cwd, thread.cwd) || ".";
       const bound = store.getByThreadId(thread.id);
-      return [
-        `${index + 1}. ${thread.preview}`,
-        `   id: ${thread.id}`,
-        `   cwd: ${relativeCwd}`,
-        `   updated: ${thread.updatedAt}`,
-        `   source: ${thread.source ?? "unknown"}`,
-        ...(bound
-          ? [`   bound: ${bound.telegramTopicName ?? bound.messageThreadId ?? bound.sessionKey}`]
-          : []),
-      ];
+      return {
+        title: `${index + 1}. ${thread.preview}`,
+        fields: [
+          codeField("id", thread.id),
+          codeField("resume", `/thread resume ${thread.id}`),
+          codeField("cwd", relativeCwd),
+          textField("updated", thread.updatedAt),
+          textField("source", thread.source ?? "unknown"),
+          ...(bound
+            ? [textField("bound", bound.telegramTopicName ?? bound.messageThreadId ?? bound.sessionKey)]
+            : []),
+        ],
+      };
     }),
-    "",
-    "Resume one with /thread resume <threadId>",
-  ];
-  await ctx.reply(lines.join("\n"));
+    footer: "Copy an id or resume command from the code-formatted fields above.",
+  });
 }

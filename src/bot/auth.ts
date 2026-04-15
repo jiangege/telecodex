@@ -1,6 +1,7 @@
 import type { Context, NextFunction } from "grammy";
 import type { Logger } from "../runtime/logger.js";
 import type { BindingCodeState, SessionStore } from "../store/sessions.js";
+import { replyError, replyNotice } from "../telegram/formatted.js";
 
 export function authMiddleware(input: {
   store: SessionStore;
@@ -18,7 +19,8 @@ export function authMiddleware(input: {
         hasTextMessage: Boolean(ctx.message?.text),
       });
       if (ctx.message?.text && ctx.chat?.type !== "private") {
-        await ctx.reply(
+        await replyError(
+          ctx,
           "This message was sent as the group identity or as an anonymous admin. telecodex cannot verify the operator. Send it from your personal account instead.",
         );
       }
@@ -43,7 +45,7 @@ export function authMiddleware(input: {
           store: input.store,
           success: async () => {
             input.store.rebindAuthorizedUserId(userId);
-            await ctx.reply("Admin handoff succeeded. This Telegram account is now authorized to use telecodex.");
+            await replyNotice(ctx, "Admin handoff succeeded. This Telegram account is now authorized to use telecodex.");
           },
           mismatchLabel: "Admin handoff code did not match.",
           exhaustedLabel: "Admin handoff code exhausted its attempt limit and was invalidated. Issue a new one from the currently authorized account.",
@@ -83,7 +85,7 @@ export function authMiddleware(input: {
           const claimedUserId = input.store.claimAuthorizedUserId(userId);
           if (claimedUserId === userId) {
             input.onAdminBound?.(userId);
-            await ctx.reply("Admin binding succeeded. Only this Telegram account can use this bot from now on.");
+            await replyNotice(ctx, "Admin binding succeeded. Only this Telegram account can use this bot from now on.");
             return;
           }
           await deny(ctx, "An admin account has already claimed this bot.");
@@ -94,7 +96,7 @@ export function authMiddleware(input: {
       if (handled) return;
     }
 
-    await ctx.reply("This bot is not initialized yet. Send the binding code shown in the startup logs to complete the one-time admin binding.");
+    await replyNotice(ctx, "This bot is not initialized yet. Send the binding code shown in the startup logs to complete the one-time admin binding.");
   };
 }
 
@@ -119,16 +121,16 @@ async function handleBindingCodeMessage(input: {
 
   const attempt = input.store.recordBindingCodeFailure();
   if (!attempt) {
-    await input.ctx.reply("The binding code is no longer active. Issue a new one and try again.");
+    await replyError(input.ctx, "The binding code is no longer active. Issue a new one and try again.");
     return true;
   }
 
   if (attempt.exhausted) {
-    await input.ctx.reply(input.exhaustedLabel);
+    await replyError(input.ctx, input.exhaustedLabel);
     return true;
   }
 
-  await input.ctx.reply(`${input.mismatchLabel}\nRemaining attempts: ${attempt.remaining}`);
+  await replyError(input.ctx, input.mismatchLabel, `Remaining attempts: ${attempt.remaining}`);
   return true;
 }
 
@@ -138,6 +140,6 @@ async function deny(ctx: Context, text: string): Promise<void> {
     return;
   }
   if (ctx.chat?.type === "private") {
-    await ctx.reply(text);
+    await replyError(ctx, text);
   }
 }

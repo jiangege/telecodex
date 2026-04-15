@@ -6,6 +6,10 @@ export type ProjectBinding = StoredProjectBinding;
 export class ProjectStore {
   constructor(private readonly storage: FileStateStorage) {}
 
+  flush(): Promise<void> {
+    return this.storage.flush();
+  }
+
   get(chatId: string): ProjectBinding | null {
     return this.storage.getProject(chatId);
   }

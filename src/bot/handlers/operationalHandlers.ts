@@ -10,45 +10,49 @@ import {
   formatProjectStatus,
   formatReasoningEffort,
   getProjectForContext,
-  getScopedSession,
   hasTopicContext,
   isPrivateChat,
   parseSubcommand,
+  requireScopedSession,
 } from "../commandSupport.js";
 import { formatIsoTimestamp, sessionLogFields } from "../sessionFlow.js";
+import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, codex, logger } = deps;
 
   bot.command(["start", "help"], async (ctx) => {
-    await ctx.reply(formatHelpText(ctx, projects));
+    await replyNotice(ctx, formatHelpText(ctx, projects));
   });
 
   bot.command("admin", async (ctx) => {
     if (!isPrivateChat(ctx)) {
-      await ctx.reply("Use /admin in the bot private chat.");
+      await replyNotice(ctx, "Use /admin in the bot private chat.");
       return;
     }
 
     const authorizedUserId = store.getAuthorizedUserId();
     if (authorizedUserId == null) {
-      await ctx.reply("Admin binding is not completed yet.");
+      await replyNotice(ctx, "Admin binding is not completed yet.");
       return;
     }
 
     const { command } = parseSubcommand(ctx.match.trim());
     const binding = store.getBindingCodeState();
     if (!command || command === "status") {
-      await ctx.reply(
-        [
-          "Admin status",
-          `authorized telegram user id: ${authorizedUserId}`,
-          binding?.mode === "rebind"
-            ? `pending handoff: active until ${formatIsoTimestamp(binding.expiresAt)} (${binding.maxAttempts - binding.attempts} attempts remaining)`
-            : "pending handoff: none",
-          "Usage: /admin | /admin rebind | /admin cancel",
-        ].join("\n"),
-      );
+      await replyDocument(ctx, {
+        title: "Admin status",
+        fields: [
+          textField("authorized telegram user id", authorizedUserId),
+          textField(
+            "pending handoff",
+            binding?.mode === "rebind"
+              ? `active until ${formatIsoTimestamp(binding.expiresAt)} (${binding.maxAttempts - binding.attempts} attempts remaining)`
+              : "none",
+          ),
+        ],
+        footer: "Usage: /admin | /admin rebind | /admin cancel",
+      });
       return;
     }
 
@@ -58,51 +62,49 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         mode: "rebind",
         issuedByUserId: authorizedUserId,
       });
-      await ctx.reply(
-        [
-          "Admin handoff code created.",
-          `expires at: ${formatIsoTimestamp(next.expiresAt)}`,
-          `max failed attempts: ${next.maxAttempts}`,
-          "",
-          next.code,
-          "",
-          "Send this code from the target Telegram account in this bot's private chat to transfer control.",
-        ].join("\n"),
-      );
+      await replyDocument(ctx, {
+        title: "Admin handoff code created.",
+        fields: [
+          textField("expires at", formatIsoTimestamp(next.expiresAt)),
+          textField("max failed attempts", next.maxAttempts),
+          codeField("code", next.code),
+        ],
+        footer: "Send this code from the target Telegram account in this bot's private chat to transfer control.",
+      });
       return;
     }
 
     if (command === "cancel") {
       if (binding?.mode !== "rebind") {
-        await ctx.reply("No pending admin handoff.");
+        await replyNotice(ctx, "No pending admin handoff.");
         return;
       }
       store.clearBindingCode();
-      await ctx.reply("Cancelled the pending admin handoff.");
+      await replyNotice(ctx, "Cancelled the pending admin handoff.");
       return;
     }
 
-    await ctx.reply("Usage: /admin | /admin rebind | /admin cancel");
+    await replyUsage(ctx, "/admin | /admin rebind | /admin cancel");
   });
 
   bot.command("status", async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await ctx.reply(formatPrivateStatus(store, projects));
+      await replyNotice(ctx, formatPrivateStatus(store, projects));
       return;
     }
 
     const project = getProjectForContext(ctx, projects);
     if (!project) {
-      await ctx.reply("This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
+      await replyNotice(ctx, "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
       return;
     }
 
     if (!hasTopicContext(ctx)) {
-      await ctx.reply(formatProjectStatus(project));
+      await replyNotice(ctx, formatProjectStatus(project));
       return;
     }
 
-    const session = getScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
     const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
@@ -110,98 +112,103 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     const queuedPreview = store.listQueuedInputs(latestSession.sessionKey, 3);
     const activeRun = codex.getActiveRun(latestSession.sessionKey);
 
-    await ctx.reply(
-      [
-        "Status",
-        `project: ${project.name}`,
-        `root: ${project.cwd}`,
-        `thread: ${latestSession.codexThreadId ?? "not created"}`,
-        `state: ${formatSessionRuntimeStatus(latestSession.runtimeStatus)}`,
-        `state detail: ${latestSession.runtimeStatusDetail ?? "none"}`,
-        `state updated: ${formatIsoTimestamp(latestSession.runtimeStatusUpdatedAt)}`,
-        `active turn: ${latestSession.activeTurnId ?? "none"}`,
-        `active run: ${activeRun ? formatIsoTimestamp(activeRun.startedAt) : "none"}`,
-        `active run thread: ${activeRun?.threadId ?? "none"}`,
-        `active run last event: ${activeRun?.lastEventType ?? "none"}`,
-        `active run last update: ${activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "none"}`,
-        `queue: ${queueDepth}`,
-        `queue next: ${formatQueuedPreview(queuedPreview)}`,
-        `cwd: ${latestSession.cwd}`,
-        `preset: ${presetFromProfile(latestSession)}`,
-        `sandbox: ${latestSession.sandboxMode}`,
-        `approval: ${latestSession.approvalPolicy}`,
-        `network: ${latestSession.networkAccessEnabled ? "on" : "off"}`,
-        `web: ${latestSession.webSearchMode ?? "codex-default"}`,
-        `git check: ${latestSession.skipGitRepoCheck ? "skip" : "enforce"}`,
-        `add dirs: ${latestSession.additionalDirectories.length}`,
-        `schema: ${latestSession.outputSchema ? "set" : "none"}`,
-        `model: ${latestSession.model}`,
-        `effort: ${formatReasoningEffort(latestSession.reasoningEffort)}`,
-      ].join("\n"),
-    );
+    await replyDocument(ctx, {
+      title: "Status",
+      fields: [
+        codeField("project", project.name),
+        codeField("root", project.cwd),
+        codeField("thread", latestSession.codexThreadId ?? "not created"),
+        textField("state", formatSessionRuntimeStatus(latestSession.runtimeStatus)),
+        textField("state detail", latestSession.runtimeStatusDetail ?? "none"),
+        textField("state updated", formatIsoTimestamp(latestSession.runtimeStatusUpdatedAt)),
+        codeField("active turn", latestSession.activeTurnId ?? "none"),
+        textField("active run", activeRun ? formatIsoTimestamp(activeRun.startedAt) : "none"),
+        codeField("active run thread", activeRun?.threadId ?? "none"),
+        textField("active run last event", activeRun?.lastEventType ?? "none"),
+        textField("active run last update", activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "none"),
+        textField("queue", queueDepth),
+        textField("queue next", formatQueuedPreview(queuedPreview)),
+        codeField("cwd", latestSession.cwd),
+        textField("preset", presetFromProfile(latestSession)),
+        textField("sandbox", latestSession.sandboxMode),
+        textField("approval", latestSession.approvalPolicy),
+        textField("network", latestSession.networkAccessEnabled ? "on" : "off"),
+        textField("web", latestSession.webSearchMode ?? "codex-default"),
+        textField("git check", latestSession.skipGitRepoCheck ? "skip" : "enforce"),
+        textField("add dirs", latestSession.additionalDirectories.length),
+        textField("schema", latestSession.outputSchema ? "set" : "none"),
+        textField("model", latestSession.model),
+        textField("effort", formatReasoningEffort(latestSession.reasoningEffort)),
+      ],
+    });
   });
 
   bot.command("queue", async (ctx) => {
-    const session = getScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
     const { command, args } = parseSubcommand(ctx.match.trim());
     if (!command) {
       const queued = store.listQueuedInputs(session.sessionKey, 5);
       const queueDepth = store.getQueuedInputCount(session.sessionKey);
-      await ctx.reply(
-        [
-          "Queue",
-          `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
-          `active turn: ${session.activeTurnId ?? "none"}`,
-          `queue: ${queueDepth}`,
-          queued.length > 0 ? `items:\n${formatQueuedItems(queued)}` : "items: none",
-          "Usage: /queue | /queue drop <id> | /queue clear",
-        ].join("\n"),
-      );
+      await replyDocument(ctx, {
+        title: "Queue",
+        fields: [
+          textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
+          codeField("active turn", session.activeTurnId ?? "none"),
+          textField("queue", queueDepth),
+        ],
+        sections: [
+          {
+            title: "Items",
+            lines: queued.length > 0 ? [formatQueuedItems(queued)] : ["none"],
+          },
+        ],
+        footer: "Usage: /queue | /queue drop <id> | /queue clear",
+      });
       return;
     }
 
     if (command === "clear") {
       const removed = store.clearQueuedInputs(session.sessionKey);
-      await ctx.reply(`Cleared the queue and removed ${removed} pending message(s).`);
+      await replyNotice(ctx, `Cleared the queue and removed ${removed} pending message(s).`);
       return;
     }
 
     if (command === "drop") {
       const id = Number(args);
       if (!Number.isInteger(id) || id <= 0) {
-        await ctx.reply("Usage: /queue drop <id>");
+        await replyUsage(ctx, "/queue drop <id>");
         return;
       }
       const removed = store.removeQueuedInputForSession(session.sessionKey, id);
-      await ctx.reply(removed ? `Removed queued item #${id}.` : `Queued item #${id} was not found.`);
+      await replyNotice(ctx, removed ? `Removed queued item #${id}.` : `Queued item #${id} was not found.`);
       return;
     }
 
-    await ctx.reply("Usage: /queue | /queue drop <id> | /queue clear");
+    await replyUsage(ctx, "/queue | /queue drop <id> | /queue clear");
   });
 
   bot.command("stop", async (ctx) => {
-    const session = getScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
     const latest = store.get(session.sessionKey) ?? session;
     if (!codex.isRunning(session.sessionKey)) {
-      await ctx.reply("There is no active Codex SDK turn right now.");
+      await replyNotice(ctx, "There is no active Codex SDK turn right now.");
       return;
     }
 
     try {
       codex.interrupt(session.sessionKey);
-      await ctx.reply("Interrupt requested for the current run. Waiting for Codex SDK to stop.");
+      await replyNotice(ctx, "Interrupt requested for the current run. Waiting for Codex SDK to stop.");
     } catch (error) {
       logger?.warn("interrupt turn failed", {
         ...contextLogFields(ctx),
         ...sessionLogFields(latest),
         error,
       });
-      await ctx.reply(`Interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
+      await replyError(ctx, `Interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
 }

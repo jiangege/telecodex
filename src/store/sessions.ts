@@ -77,6 +77,10 @@ export class SessionStore {
 
   constructor(private readonly storage: FileStateStorage) {}
 
+  flush(): Promise<void> {
+    return this.storage.flush();
+  }
+
   getAppState(key: string): string | null {
     return this.storage.getAppState(key);
   }

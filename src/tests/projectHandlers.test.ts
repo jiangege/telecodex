@@ -60,7 +60,10 @@ test("/thread new creates a fresh topic session and posts a ready message", asyn
     assert.ok(session);
     assert.equal(session?.codexThreadId, null);
     assert.equal(session?.cwd, process.cwd());
-    assert.ok(sent.some((entry) => entry.text.includes("New topic created.")));
+    const readyMessage = sent.find((entry) => entry.text.includes("New topic created."));
+    assert.ok(readyMessage);
+    assert.equal(readyMessage?.options?.parse_mode, undefined);
+    assert.deepEqual(readyMessage?.options?.link_preview_options, { is_disabled: true });
     assert.match(replies.at(-1) ?? "", /Created a new topic/);
   } finally {
     cleanup();
@@ -110,7 +113,10 @@ test("/thread resume creates a topic and binds it to a known thread id", async (
     const session = store.get(`-100:${createdTopics[0]!.messageThreadId}`);
     assert.ok(session);
     assert.equal(session?.codexThreadId, "thread-401");
-    assert.ok(sent.some((entry) => entry.text.includes("This topic is now bound to an existing Codex thread id.")));
+    const readyMessage = sent.find((entry) => entry.text.includes("This topic is now bound to an existing Codex thread id."));
+    assert.ok(readyMessage);
+    assert.equal(readyMessage?.options?.parse_mode, undefined);
+    assert.deepEqual(readyMessage?.options?.link_preview_options, { is_disabled: true });
     assert.match(replies.at(-1) ?? "", /Created a topic and bound it to the existing thread id/);
   } finally {
     cleanup();
@@ -164,26 +170,52 @@ test("/thread list shows saved project threads from the Codex session catalog", 
       buffers: {} as never,
     });
 
-    const replies: string[] = [];
+    const replies: Array<{ text: string; options: unknown }> = [];
     const handler = commands.get("thread");
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
       match: "list",
-      reply: async (text: string) => {
-        replies.push(text);
+      reply: async (text: string, options?: unknown) => {
+        replies.push({ text, options: options ?? null });
         return undefined;
       },
     });
 
-    const output = replies.at(-1) ?? "";
-    assert.match(output, /Saved Codex threads for telecodex/);
+    const reply = replies.at(-1);
+    assert.ok(reply);
+    const options = reply.options as {
+      parse_mode?: string;
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      reply_markup?: unknown;
+    };
+    assert.equal(options.parse_mode, undefined);
+    assert.equal(options.reply_markup, undefined);
+    const output = reply.text;
+    assert.match(output, /Saved Codex threads/);
+    assert.match(output, /project: telecodex/);
     assert.match(output, /First saved thread/);
     assert.match(output, /id: thread-1/);
+    assert.match(output, /resume: \/thread resume thread-1/);
     assert.match(output, /Second saved thread/);
     assert.match(output, /bound: Bound Topic/);
-    assert.match(output, /Resume one with \/thread resume <threadId>/);
+    assert.match(output, /Copy an id or resume command from the code-formatted fields above/);
+    assert.ok(hasEntity(options.entities, output, "bold", "Saved Codex threads"));
+    assert.ok(hasEntity(options.entities, output, "code", "telecodex"));
+    assert.ok(hasEntity(options.entities, output, "bold", "1. First saved thread"));
+    assert.ok(hasEntity(options.entities, output, "code", "thread-1"));
+    assert.ok(hasEntity(options.entities, output, "code", "/thread resume thread-1"));
   } finally {
     cleanup();
   }
 });
+
+function hasEntity(
+  entities: Array<{ type: string; offset: number; length: number }> | undefined,
+  text: string,
+  type: string,
+  value: string,
+): boolean {
+  const offset = text.indexOf(value);
+  return entities?.some((entity) => entity.type === type && entity.offset === offset && entity.length === value.length) ?? false;
+}

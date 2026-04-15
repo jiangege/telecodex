@@ -1,10 +1,11 @@
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
   contextLogFields,
-  getScopedSession,
+  requireScopedSession,
 } from "../commandSupport.js";
 import { handleUserInput, handleUserText } from "../inputService.js";
 import { telegramImageMessageToCodexInput } from "../../telegram/attachments.js";
+import { replyError, replyNotice } from "../../telegram/formatted.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, codex, buffers, logger } = deps;
@@ -18,7 +19,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
     });
     if (text.startsWith("/")) return;
 
-    const session = getScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) {
       logger?.warn("ignored telegram text message because no scoped session was available", {
         ...contextLogFields(ctx),
@@ -39,7 +40,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
   });
 
   bot.on(["message:photo", "message:document"], async (ctx) => {
-    const session = getScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) {
       logger?.warn("ignored telegram attachment because no scoped session was available", {
         ...contextLogFields(ctx),
@@ -56,7 +57,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
         message: ctx.message,
       });
       if (!prompt) {
-        await ctx.reply("Only image attachments are supported.");
+        await replyNotice(ctx, "Only image attachments are supported.");
         return;
       }
 
@@ -74,7 +75,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
         ...contextLogFields(ctx),
         error,
       });
-      await ctx.reply(error instanceof Error ? error.message : String(error));
+      await replyError(ctx, error instanceof Error ? error.message : String(error));
     }
   });
 }

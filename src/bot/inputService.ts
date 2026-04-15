@@ -13,7 +13,7 @@ import type { Logger } from "../runtime/logger.js";
 import { applySessionRuntimeEvent } from "../runtime/sessionRuntime.js";
 import { type SessionStore, type StoredCodexInput, type TelegramSession } from "../store/sessions.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
-import { sendPlainChunks } from "../telegram/delivery.js";
+import { sendReplyNotice } from "../telegram/formatted.js";
 import { CodexSdkRuntime, isAbortError } from "../codex/sdkRuntime.js";
 import { numericChatId, numericMessageThreadId } from "./session.js";
 import {
@@ -76,18 +76,18 @@ export async function handleUserInput(input: {
 
     const queued = store.enqueueInput(session.sessionKey, prompt);
     const queueDepth = store.getQueuedInputCount(session.sessionKey);
-    await sendPlainChunks(
+    await sendReplyNotice(
       bot,
       {
         chatId: numericChatId(session),
         messageThreadId: numericMessageThreadId(session),
-        text: [
-          `The current Codex task is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
-          `queue position: ${queueDepth}`,
-          `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
-          "It will be processed automatically after the current run finishes.",
-        ].join("\n"),
       },
+      [
+        `The current Codex task is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
+        `queue position: ${queueDepth}`,
+        `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
+        "It will be processed automatically after the current run finishes.",
+      ],
       logger,
     );
     return {
@@ -210,13 +210,13 @@ export async function recoverActiveTopicSessions(
 
   for (const session of sessions) {
     const refreshed = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
-    await sendPlainChunks(
+    await sendReplyNotice(
       bot,
       {
         chatId: numericChatId(refreshed),
         messageThreadId: numericMessageThreadId(refreshed),
-        text: "telecodex restarted and cannot resume the previous streamed run state. Send the message again if you want to continue.",
       },
+      "telecodex restarted and cannot resume the previous streamed run state. Send the message again if you want to continue.",
       logger,
     ).catch((error) => {
       logger?.warn("failed to notify session about stale sdk recovery", {
@@ -292,7 +292,7 @@ async function runSessionPrompt(input: {
         networkAccessEnabled: session.networkAccessEnabled,
         skipGitRepoCheck: session.skipGitRepoCheck,
         additionalDirectories: session.additionalDirectories,
-        outputSchema: parseOutputSchema(session.outputSchema),
+        outputSchema: readOutputSchema(session, store, logger),
       },
       prompt: toSdkInput(prompt),
       callbacks: {
@@ -507,5 +507,22 @@ function toSdkInput(input: StoredCodexInput): Input {
 
 function parseOutputSchema(value: string | null): unknown {
   if (!value) return undefined;
-  return JSON.parse(value) as unknown;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error(`Invalid stored output schema: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function readOutputSchema(session: TelegramSession, store: SessionStore, logger?: Logger): unknown {
+  try {
+    return parseOutputSchema(session.outputSchema);
+  } catch (error) {
+    store.setOutputSchema(session.sessionKey, null);
+    logger?.warn("cleared invalid stored output schema", {
+      ...sessionLogFields(session),
+      error,
+    });
+    return undefined;
+  }
 }

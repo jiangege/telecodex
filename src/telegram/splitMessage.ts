@@ -1,4 +1,4 @@
-const TELEGRAM_SAFE_TEXT_LIMIT = 3900;
+export const TELEGRAM_SAFE_TEXT_LIMIT = 3900;
 
 export function splitTelegramText(text: string, limit = TELEGRAM_SAFE_TEXT_LIMIT): string[] {
   if (text.length <= limit) return [text];

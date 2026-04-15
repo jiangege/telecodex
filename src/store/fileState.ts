@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import {
   DEFAULT_SESSION_PROFILE,
@@ -13,6 +14,12 @@ import {
 } from "../config.js";
 
 const FILE_STATE_VERSION = 1;
+const require = createRequire(import.meta.url);
+const writeFileAtomic = require("write-file-atomic") as (
+  filePath: string,
+  data: string,
+  options?: { encoding?: BufferEncoding; fsync?: boolean },
+) => Promise<void>;
 
 interface AppStateFile {
   version: number;
@@ -64,6 +71,7 @@ export class FileStateStorage {
   private readonly appState = new Map<string, string>();
   private readonly projects = new Map<string, StoredProjectBinding>();
   private readonly sessions = new Map<string, StoredSessionRecord>();
+  private readonly flushStateByPath = new Map<string, PendingFlushState>();
 
   constructor(private readonly rootDir: string) {
     mkdirSync(rootDir, { recursive: true });
@@ -205,25 +213,121 @@ export class FileStateStorage {
   }
 
   private flushAppState(): void {
-    writeJsonFile(this.appPath, {
+    this.scheduleJsonWrite(this.appPath, {
       version: FILE_STATE_VERSION,
       values: Object.fromEntries([...this.appState.entries()].sort(([left], [right]) => left.localeCompare(right))),
     } satisfies AppStateFile);
   }
 
   private flushProjects(): void {
-    writeJsonFile(this.projectsPath, {
+    this.scheduleJsonWrite(this.projectsPath, {
       version: FILE_STATE_VERSION,
       projects: [...this.projects.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     } satisfies ProjectsFile);
   }
 
   private flushSessions(): void {
-    writeJsonFile(this.sessionsPath, {
+    this.scheduleJsonWrite(this.sessionsPath, {
       version: FILE_STATE_VERSION,
       sessions: [...this.sessions.values()].sort((left, right) => left.sessionKey.localeCompare(right.sessionKey)),
     } satisfies SessionsFile);
   }
+
+  async flush(): Promise<void> {
+    for (;;) {
+      await Promise.resolve();
+      const active = [...this.flushStateByPath.values()].map((state) => state.draining).filter((entry): entry is Promise<void> => entry != null);
+      if (active.length > 0) {
+        await Promise.all(active);
+        continue;
+      }
+
+      this.throwPendingFlushErrors();
+      let started = false;
+      for (const [filePath, state] of this.flushStateByPath.entries()) {
+        if (state.scheduled || state.draining || state.pendingJson === undefined) continue;
+        this.startDrainWhenReady(filePath, state);
+        started = true;
+      }
+      if (!started && [...this.flushStateByPath.values()].every((state) => !state.scheduled && state.pendingJson === undefined)) {
+        this.throwPendingFlushErrors();
+        return;
+      }
+    }
+  }
+
+  private scheduleJsonWrite(filePath: string, value: unknown): void {
+    const state = this.getOrCreateFlushState(filePath);
+    state.pendingJson = `${JSON.stringify(value, null, 2)}\n`;
+    state.error = null;
+    this.startDrainWhenReady(filePath, state);
+  }
+
+  private startDrainWhenReady(filePath: string, state: PendingFlushState): void {
+    if (state.scheduled || state.draining) return;
+    state.scheduled = true;
+    queueMicrotask(() => {
+      state.scheduled = false;
+      if (state.draining) return;
+      state.draining = this.drainJsonWrites(filePath, state)
+        .catch((error) => {
+          state.error = error;
+        })
+        .finally(() => {
+          state.draining = null;
+          if (state.pendingJson !== undefined && !state.scheduled && state.error == null) {
+            this.startDrainWhenReady(filePath, state);
+          }
+        });
+    });
+  }
+
+  private getOrCreateFlushState(filePath: string): PendingFlushState {
+    let state = this.flushStateByPath.get(filePath);
+    if (state) return state;
+    state = {
+      pendingJson: undefined,
+      scheduled: false,
+      draining: null,
+      error: null,
+    };
+    this.flushStateByPath.set(filePath, state);
+    return state;
+  }
+
+  private async drainJsonWrites(filePath: string, state: PendingFlushState): Promise<void> {
+    for (;;) {
+      const nextJson = state.pendingJson;
+      if (nextJson === undefined) {
+        return;
+      }
+      state.pendingJson = undefined;
+      try {
+        await writeJsonFile(filePath, nextJson);
+      } catch (error) {
+        if (state.pendingJson === undefined) {
+          state.pendingJson = nextJson;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private throwPendingFlushErrors(): void {
+    for (const state of this.flushStateByPath.values()) {
+      if (state.error == null) continue;
+      const error = state.error;
+      state.error = null;
+      throw error;
+    }
+  }
+}
+
+interface PendingFlushState {
+  pendingJson: string | undefined;
+  scheduled: boolean;
+  draining: Promise<void> | null;
+  error: unknown | null;
 }
 
 function loadAppStateFile(filePath: string): AppStateFile {
@@ -358,11 +462,11 @@ function normalizeStoredSessionRecord(value: unknown): StoredSessionRecord {
   };
 }
 
-function writeJsonFile(filePath: string, value: unknown): void {
+async function writeJsonFile(filePath: string, value: string): Promise<void> {
   mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  renameSync(tempPath, filePath);
+  await writeFileAtomic(filePath, value, {
+    encoding: "utf8",
+  });
 }
 
 function readJsonFile(filePath: string): unknown | null {

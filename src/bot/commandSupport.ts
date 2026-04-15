@@ -12,7 +12,7 @@ import {
 import type { Logger } from "../runtime/logger.js";
 import type { ProjectBinding, ProjectStore } from "../store/projects.js";
 import { makeSessionKey, type SessionStore, type TelegramSession } from "../store/sessions.js";
-import { sendPlainChunks } from "../telegram/delivery.js";
+import { replyNotice, sendReplyNotice } from "../telegram/formatted.js";
 import { numericChatId, numericMessageThreadId, sessionFromContext } from "./session.js";
 import { truncateSingleLine } from "./sessionFlow.js";
 
@@ -29,22 +29,11 @@ export function getScopedSession(
   config: AppConfig,
   options?: { requireTopic?: boolean },
 ): TelegramSession | null {
-  if (isPrivateChat(ctx)) {
-    void ctx.reply("Private chat is only for admin binding and project overview. Do actual work inside project supergroup topics.");
-    return null;
-  }
-
   const project = getProjectForContext(ctx, projects);
-  if (!project) {
-    void ctx.reply("This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
-    return null;
-  }
+  if (!project || isPrivateChat(ctx)) return null;
 
   const requireTopic = options?.requireTopic ?? true;
-  if (requireTopic && !hasTopicContext(ctx)) {
-    void ctx.reply("Use this inside a forum topic. The root chat is only for project-level commands; work happens inside topics.");
-    return null;
-  }
+  if (requireTopic && !hasTopicContext(ctx)) return null;
 
   const session = sessionFromContext(ctx, store, config);
   if (!isPathWithinRoot(session.cwd, project.cwd)) {
@@ -52,6 +41,19 @@ export function getScopedSession(
     return store.get(session.sessionKey) ?? session;
   }
   return session;
+}
+
+export async function requireScopedSession(
+  ctx: Context,
+  store: SessionStore,
+  projects: ProjectStore,
+  config: AppConfig,
+  options?: { requireTopic?: boolean },
+): Promise<TelegramSession | null> {
+  const session = getScopedSession(ctx, store, projects, config, options);
+  if (session) return session;
+  await replyScopedSessionRequirement(ctx, projects, options);
+  return null;
 }
 
 export function formatHelpText(ctx: Context, projects: ProjectStore): string {
@@ -200,13 +202,13 @@ export function ensureTopicSession(input: {
 }
 
 export async function postTopicReadyMessage(bot: Bot, session: TelegramSession, text: string, logger?: Logger): Promise<void> {
-  await sendPlainChunks(
+  await sendReplyNotice(
     bot,
     {
       chatId: numericChatId(session),
       messageThreadId: numericMessageThreadId(session),
-      text,
     },
+    text,
     logger,
   );
 }
@@ -303,5 +305,27 @@ function canonicalizeBoundaryPath(input: string): string {
     return realpathSync.native(resolved);
   } catch {
     return resolved;
+  }
+}
+
+async function replyScopedSessionRequirement(
+  ctx: Context,
+  projects: ProjectStore,
+  options?: { requireTopic?: boolean },
+): Promise<void> {
+  if (isPrivateChat(ctx)) {
+    await replyNotice(ctx, "Private chat is only for admin binding and project overview. Do actual work inside project supergroup topics.");
+    return;
+  }
+
+  const project = getProjectForContext(ctx, projects);
+  if (!project) {
+    await replyNotice(ctx, "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
+    return;
+  }
+
+  const requireTopic = options?.requireTopic ?? true;
+  if (requireTopic && !hasTopicContext(ctx)) {
+    await replyNotice(ctx, "Use this inside a forum topic. The root chat is only for project-level commands; work happens inside topics.");
   }
 }

@@ -3,12 +3,15 @@ import type { Logger } from "../runtime/logger.js";
 import { renderPlainChunksForTelegram } from "./renderer.js";
 import { splitTelegramHtml } from "./splitMessage.js";
 
+const telegramCooldownByClient = new WeakMap<object, TelegramCooldownState>();
+
 export async function sendHtmlMessage(
   bot: Bot,
   input: { chatId: number; messageThreadId: number | null; text: string },
   logger?: Logger,
 ): Promise<{ message_id: number }> {
   return retryTelegramCall(
+    bot.api,
     () =>
       bot.api.sendMessage(input.chatId, input.text, {
         ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
@@ -54,6 +57,7 @@ export async function sendTypingAction(
   logger?: Logger,
 ): Promise<void> {
   await retryTelegramCall(
+    bot.api,
     () =>
       bot.api.sendChatAction(input.chatId, "typing", {
         ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
@@ -143,6 +147,7 @@ export async function editHtmlMessage(
   logger?: Logger,
 ): Promise<void> {
   await retryTelegramCall(
+    bot.api,
     () =>
       bot.api.editMessageText(input.chatId, input.messageId, input.text, {
         parse_mode: "HTML",
@@ -187,12 +192,14 @@ function descriptionOf(error: GrammyError): string | null {
 }
 
 export async function retryTelegramCall<T>(
+  cooldownKey: object,
   operation: () => Promise<T>,
   logger: Logger | undefined,
   message: string,
   context: Record<string, number | null>,
 ): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
+    await waitForTelegramCooldown(cooldownKey);
     try {
       return await operation();
     } catch (error) {
@@ -200,15 +207,54 @@ export async function retryTelegramCall<T>(
       if (waitMs == null || attempt >= 5) {
         throw error;
       }
+      const cooldownMs = waitMs + 250;
       logger?.warn(message, {
         ...context,
         attempt: attempt + 1,
         retryAfterMs: waitMs,
+        sharedCooldownMs: cooldownMs,
         error,
       });
-      await sleep(waitMs + 250);
+      await applyTelegramCooldown(cooldownKey, cooldownMs);
     }
   }
+}
+
+async function waitForTelegramCooldown(cooldownKey: object): Promise<void> {
+  for (;;) {
+    const cooldown = telegramCooldownByClient.get(cooldownKey)?.cooldown ?? null;
+    if (!cooldown) return;
+    await cooldown;
+  }
+}
+
+async function applyTelegramCooldown(cooldownKey: object, delayMs: number): Promise<void> {
+  const state = getTelegramCooldownState(cooldownKey);
+  const previous = state.cooldown;
+  const baseCooldown = previous
+    ? previous.then(() => sleep(delayMs))
+    : sleep(delayMs);
+  const cooldown = baseCooldown.finally(() => {
+    if (state.cooldown === cooldown) {
+      state.cooldown = null;
+    }
+  });
+  state.cooldown = cooldown;
+  await state.cooldown;
+}
+
+function getTelegramCooldownState(cooldownKey: object): TelegramCooldownState {
+  let state = telegramCooldownByClient.get(cooldownKey);
+  if (state) return state;
+  state = {
+    cooldown: null,
+  };
+  telegramCooldownByClient.set(cooldownKey, state);
+  return state;
+}
+
+interface TelegramCooldownState {
+  cooldown: Promise<void> | null;
 }
 
 function sleep(ms: number): Promise<void> {

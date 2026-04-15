@@ -87,7 +87,7 @@ test("queue helpers can drop a single item or clear the rest", () => {
   }
 });
 
-test("reloading the file-backed session store keeps durable topic state but clears runtime and queue state", () => {
+test("reloading the file-backed session store keeps durable topic state but clears runtime and queue state", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-session-reload-"));
   const stateDir = path.join(dir, "state");
   try {
@@ -109,6 +109,7 @@ test("reloading the file-backed session store keeps durable topic state but clea
     });
     firstStore.setOutputMessage(session.sessionKey, 999);
     firstStore.enqueueInput(session.sessionKey, "queued before restart");
+    await firstStore.flush();
 
     const secondStore = new SessionStore(new FileStateStorage(stateDir));
     const reloaded = secondStore.get(session.sessionKey);
@@ -122,7 +123,7 @@ test("reloading the file-backed session store keeps durable topic state but clea
   }
 });
 
-test("file-backed session state keeps multi-topic bindings isolated across reloads and removals", () => {
+test("file-backed session state keeps multi-topic bindings isolated across reloads and removals", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-session-multi-topic-"));
   const stateDir = path.join(dir, "state");
   try {
@@ -146,6 +147,7 @@ test("file-backed session state keeps multi-topic bindings isolated across reloa
     firstStore.bindThread(firstTopic.sessionKey, "thread-a");
     firstStore.setTelegramTopicName(secondTopic.sessionKey, "Topic B Renamed");
     firstStore.setAdditionalDirectories(secondTopic.sessionKey, ["/repo/shared"]);
+    await firstStore.flush();
 
     const secondStore = new SessionStore(new FileStateStorage(stateDir));
     assert.deepEqual(
@@ -161,6 +163,7 @@ test("file-backed session state keeps multi-topic bindings isolated across reloa
     assert.deepEqual(secondStore.get("-100:82")?.additionalDirectories, ["/repo/shared"]);
 
     secondStore.remove("-100:81");
+    await secondStore.flush();
 
     const thirdStore = new SessionStore(new FileStateStorage(stateDir));
     assert.equal(thirdStore.get("-100:81"), null);

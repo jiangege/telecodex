@@ -1,6 +1,6 @@
 import { run } from "@grammyjs/runner";
-import type { CodexOptions } from "@openai/codex-sdk";
 import { createBot } from "../bot/createBot.js";
+import { tryParseCodexConfigOverrides } from "../codex/configOverrides.js";
 import { CodexSessionCatalog } from "../codex/sessionCatalog.js";
 import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import { bootstrapRuntime } from "./bootstrap.js";
@@ -29,7 +29,14 @@ export async function startTelecodex(): Promise<void> {
     });
 
     const { config, store, projects, bootstrapCode, botUsername } = await bootstrapRuntime();
-    const configOverrides = parseCodexConfigOverrides(store.getAppState("codex_config_overrides"));
+    const storedConfigOverrides = store.getAppState("codex_config_overrides");
+    const { value: configOverrides, error: configOverridesError } = tryParseCodexConfigOverrides(storedConfigOverrides);
+    if (configOverridesError) {
+      store.deleteAppState("codex_config_overrides");
+      logger.warn("cleared invalid stored codex config overrides", {
+        error: configOverridesError.message,
+      });
+    }
     const codex = new CodexSdkRuntime({
       codexBin: config.codexBin,
       logger: logger.child("codex-sdk"),
@@ -64,14 +71,24 @@ export async function startTelecodex(): Promise<void> {
 
     const runner = run(bot);
 
+    let shuttingDown = false;
     const stopRuntime = (signal: NodeJS.Signals): void => {
-      logger.info("received shutdown signal", { signal });
-      codex.interruptAll();
-      runner.stop();
-      instanceLock?.release();
-      instanceLock = null;
-      logger.flush();
-      process.exit(0);
+      if (shuttingDown) return;
+      shuttingDown = true;
+      void (async () => {
+        logger.info("received shutdown signal", { signal });
+        codex.interruptAll();
+        runner.stop();
+        try {
+          await store.flush();
+        } catch (error) {
+          logger.warn("failed to flush pending telecodex state during shutdown", { error });
+        }
+        instanceLock?.release();
+        instanceLock = null;
+        logger.flush();
+        process.exit(0);
+      })();
     };
 
     process.once("SIGINT", () => stopRuntime("SIGINT"));
@@ -100,18 +117,6 @@ export async function startTelecodex(): Promise<void> {
     instanceLock?.release();
     logger.error("telecodex startup failed", error);
     throw error;
-  }
-}
-
-function parseCodexConfigOverrides(value: string | null): CodexOptions["config"] | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as NonNullable<CodexOptions["config"]>
-      : undefined;
-  } catch {
-    return undefined;
   }
 }
 

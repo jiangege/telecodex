@@ -30,24 +30,29 @@ interface SessionMetaPayload {
 
 export class CodexSessionCatalog implements CodexThreadCatalog {
   private readonly sessionsRoot: string;
+  private readonly cacheTtlMs: number;
+  private readonly index = new Map<string, CachedSessionSummary>();
+  private sortedPaths: string[] = [];
+  private readonly pathByThreadId = new Map<string, string>();
+  private refreshPromise: Promise<void> | null = null;
+  private lastRefreshedAt = 0;
 
-  constructor(input?: { sessionsRoot?: string; logger?: Logger }) {
+  constructor(input?: { sessionsRoot?: string; logger?: Logger; cacheTtlMs?: number }) {
     this.sessionsRoot = input?.sessionsRoot ?? defaultSessionsRoot();
     this.logger = input?.logger;
+    this.cacheTtlMs = Math.max(0, input?.cacheTtlMs ?? 5_000);
   }
 
   private readonly logger: Logger | undefined;
 
   async listProjectThreads(input: { projectRoot: string; limit?: number }): Promise<CodexThreadSummary[]> {
+    await this.ensureIndexFresh();
     const projectRoot = canonicalizePath(input.projectRoot);
     const limit = Math.max(1, input.limit ?? 8);
-    const files = listSessionFiles(this.sessionsRoot)
-      .filter((entry) => entry.mtimeMs > 0)
-      .sort((left, right) => right.mtimeMs - left.mtimeMs);
     const matches: CodexThreadSummary[] = [];
 
-    for (const file of files) {
-      const summary = await readSessionSummary(file.path, file.updatedAt);
+    for (const filePath of this.sortedPaths) {
+      const summary = this.index.get(filePath)?.summary ?? null;
       if (!summary) continue;
       if (!isPathWithinRoot(summary.cwd, projectRoot)) continue;
       matches.push(summary);
@@ -58,15 +63,14 @@ export class CodexSessionCatalog implements CodexThreadCatalog {
   }
 
   async findProjectThreadById(input: { projectRoot: string; threadId: string }): Promise<CodexThreadSummary | null> {
+    await this.ensureIndexFresh();
     const projectRoot = canonicalizePath(input.projectRoot);
     const threadId = input.threadId.trim();
     if (!threadId) return null;
 
-    const files = listSessionFiles(this.sessionsRoot).sort((left, right) => right.mtimeMs - left.mtimeMs);
-    for (const file of files) {
-      const summary = await readSessionSummary(file.path, file.updatedAt);
-      if (!summary) continue;
-      if (summary.id !== threadId) continue;
+    const filePath = this.pathByThreadId.get(threadId);
+    const summary = filePath ? this.index.get(filePath)?.summary ?? null : null;
+    if (summary) {
       if (!isPathWithinRoot(summary.cwd, projectRoot)) return null;
       return summary;
     }
@@ -78,6 +82,69 @@ export class CodexSessionCatalog implements CodexThreadCatalog {
     });
     return null;
   }
+
+  private async ensureIndexFresh(): Promise<void> {
+    if (this.refreshPromise) {
+      await this.refreshPromise;
+    } else {
+      const now = Date.now();
+      if (now - this.lastRefreshedAt >= this.cacheTtlMs || this.sortedPaths.length === 0) {
+        this.refreshPromise = this.refreshIndex().finally(() => {
+          this.lastRefreshedAt = Date.now();
+          this.refreshPromise = null;
+        });
+        await this.refreshPromise;
+      }
+    }
+  }
+
+  private async refreshIndex(): Promise<void> {
+    const files = listSessionFiles(this.sessionsRoot).filter((entry) => entry.mtimeMs > 0);
+    const seenPaths = new Set(files.map((entry) => entry.path));
+
+    for (const existingPath of this.index.keys()) {
+      if (!seenPaths.has(existingPath)) {
+        this.index.delete(existingPath);
+      }
+    }
+
+    for (const file of files) {
+      const cached = this.index.get(file.path);
+      if (cached && cached.mtimeMs === file.mtimeMs) {
+        if (cached.updatedAt !== file.updatedAt) {
+          cached.updatedAt = file.updatedAt;
+        }
+        continue;
+      }
+      this.index.set(file.path, {
+        path: file.path,
+        mtimeMs: file.mtimeMs,
+        updatedAt: file.updatedAt,
+        summary: await readSessionSummary(file.path, file.updatedAt),
+      });
+    }
+
+    this.rebuildDerivedIndexes();
+  }
+
+  private rebuildDerivedIndexes(): void {
+    this.sortedPaths = [...this.index.values()]
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+      .map((entry) => entry.path);
+    this.pathByThreadId.clear();
+    for (const filePath of this.sortedPaths) {
+      const summary = this.index.get(filePath)?.summary ?? null;
+      if (!summary || this.pathByThreadId.has(summary.id)) continue;
+      this.pathByThreadId.set(summary.id, filePath);
+    }
+  }
+}
+
+interface CachedSessionSummary {
+  path: string;
+  mtimeMs: number;
+  updatedAt: string;
+  summary: CodexThreadSummary | null;
 }
 
 function defaultSessionsRoot(): string {

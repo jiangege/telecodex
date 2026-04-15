@@ -36,20 +36,23 @@ export interface BootstrapResult {
   botUsername: string | null;
 }
 
+export interface RuntimePersistence {
+  storage: FileStateStorage;
+  store: SessionStore;
+  projects: ProjectStore;
+  secrets: SecretStore;
+}
+
+export interface BootstrapBindingState {
+  code: string;
+  expiresAt: string;
+  maxAttempts: number;
+}
+
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   intro("telecodex");
 
-  const stateDir = getStateDir();
-  const storage = new FileStateStorage(stateDir);
-  migrateLegacySqliteState({
-    storage,
-    legacyDbPath: getLegacyStateDbPath(),
-  });
-  const store = new SessionStore(storage);
-  const projects = new ProjectStore(storage);
-  const secrets = new SecretStore(store, {
-    allowPlaintextFallback: process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
-  });
+  const { store, projects, secrets } = initializeRuntimePersistence();
 
   const codexBin = await ensureCodexBin(store);
   await ensureCodexLogin(codexBin);
@@ -65,34 +68,14 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     codexBin,
   });
 
-  let bootstrapCode: string | null = null;
-  if (store.getAuthorizedUserId() == null) {
-    let binding = store.getBindingCodeState();
-    if (!binding || binding.mode !== "bootstrap") {
-      binding = store.issueBindingCode({
-        code: generateBindingCode("bootstrap"),
-        mode: "bootstrap",
-      });
-    }
-    bootstrapCode = binding.code;
-  } else if (store.getBindingCodeState()?.mode === "bootstrap") {
-    store.clearBindingCode();
-  }
-  if (bootstrapCode) {
-    const binding = store.getBindingCodeState();
-    const copied = await copyBootstrapCode(bootstrapCode);
-    note(
-      [
-        `Bot: ${botUsername ? `@${botUsername}` : "unknown"}`,
-        `Workspace: ${config.defaultCwd}`,
-        copied ? "Binding code copied to the clipboard." : "Failed to copy the binding code. Copy it manually.",
-        `Binding code expires at: ${binding?.expiresAt ?? "unknown"}`,
-        `Max failed attempts: ${binding?.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
-        "",
-        bootstrapCode,
-      ].join("\n"),
-      "Admin Binding",
-    );
+  const binding = resolveBootstrapBindingState(store);
+  const bootstrapCode = binding?.code ?? null;
+  if (binding) {
+    await showBootstrapBindingNote({
+      binding,
+      botUsername,
+      workspace: config.defaultCwd,
+    });
   }
 
   return {
@@ -101,6 +84,55 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     projects,
     bootstrapCode,
     botUsername,
+  };
+}
+
+export function initializeRuntimePersistence(input?: {
+  stateDir?: string;
+  allowPlaintextFallback?: boolean;
+}): RuntimePersistence {
+  const stateDir = input?.stateDir ?? getStateDir();
+  const storage = new FileStateStorage(stateDir);
+  migrateLegacySqliteState({
+    storage,
+    legacyDbPath: getLegacyStateDbPath(),
+  });
+  const store = new SessionStore(storage);
+  const projects = new ProjectStore(storage);
+  const secrets = new SecretStore(store, {
+    allowPlaintextFallback: input?.allowPlaintextFallback ?? process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
+  });
+  return {
+    storage,
+    store,
+    projects,
+    secrets,
+  };
+}
+
+export function resolveBootstrapBindingState(
+  store: SessionStore,
+  generateCode: () => string = () => generateBindingCode("bootstrap"),
+): BootstrapBindingState | null {
+  if (store.getAuthorizedUserId() != null) {
+    if (store.getBindingCodeState()?.mode === "bootstrap") {
+      store.clearBindingCode();
+    }
+    return null;
+  }
+
+  let binding = store.getBindingCodeState();
+  if (!binding || binding.mode !== "bootstrap") {
+    binding = store.issueBindingCode({
+      code: generateCode(),
+      mode: "bootstrap",
+    });
+  }
+
+  return {
+    code: binding.code,
+    expiresAt: binding.expiresAt,
+    maxAttempts: binding.maxAttempts,
   };
 }
 
@@ -250,6 +282,26 @@ async function copyBootstrapCode(code: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function showBootstrapBindingNote(input: {
+  binding: BootstrapBindingState;
+  botUsername: string | null;
+  workspace: string;
+}): Promise<void> {
+  const copied = await copyBootstrapCode(input.binding.code);
+  note(
+    [
+      `Bot: ${input.botUsername ? `@${input.botUsername}` : "unknown"}`,
+      `Workspace: ${input.workspace}`,
+      copied ? "Binding code copied to the clipboard." : "Failed to copy the binding code. Copy it manually.",
+      `Binding code expires at: ${input.binding.expiresAt}`,
+      `Max failed attempts: ${input.binding.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
+      "",
+      input.binding.code,
+    ].join("\n"),
+    "Admin Binding",
+  );
 }
 
 function requirePromptValue(value: string | symbol): string {

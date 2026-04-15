@@ -111,6 +111,48 @@ test("CodexSessionCatalog finds a saved thread by id within the current project"
   }
 });
 
+test("CodexSessionCatalog refreshes cached summaries when session files change", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "telecodex-catalog-"));
+  const sessionsRoot = path.join(dir, "sessions");
+  try {
+    const relativePath = "2026/04/15/rollout-refresh.jsonl";
+    writeSessionFile({
+      sessionsRoot,
+      relativePath,
+      id: "thread-refresh",
+      cwd: "/repo/app",
+      preview: "Old preview",
+      updatedAt: "2026-04-15T02:00:00.000Z",
+      source: "cli",
+    });
+
+    const catalog = new CodexSessionCatalog({ sessionsRoot, cacheTtlMs: 0 });
+    const initial = await catalog.findProjectThreadById({
+      projectRoot: "/repo/app",
+      threadId: "thread-refresh",
+    });
+    assert.equal(initial?.preview, "Old preview");
+
+    writeSessionFile({
+      sessionsRoot,
+      relativePath,
+      id: "thread-refresh",
+      cwd: "/repo/app",
+      preview: "New preview",
+      updatedAt: "2026-04-15T03:00:00.000Z",
+      source: "cli",
+    });
+
+    const refreshed = await catalog.findProjectThreadById({
+      projectRoot: "/repo/app",
+      threadId: "thread-refresh",
+    });
+    assert.equal(refreshed?.preview, "New preview");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function writeSessionFile(input: {
   sessionsRoot: string;
   relativePath: string;

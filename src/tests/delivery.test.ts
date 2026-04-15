@@ -6,39 +6,29 @@ import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createNoopLogger, createFakeBot } from "./helpers.js";
 
 test("editHtmlMessage retries on Telegram 429", async () => {
-  const originalSetTimeout = global.setTimeout;
-  global.setTimeout = ((handler: (...args: unknown[]) => void, _timeout?: number, ...args: unknown[]) => {
-    handler(...args);
-    return { ref() { return this; }, unref() { return this; } } as never;
-  }) as unknown as typeof setTimeout;
-
   let calls = 0;
   const bot = {
     api: {
       async editMessageText() {
         calls += 1;
         if (calls < 3) {
-          throw fakeGrammyError("Too Many Requests: retry after 1", 1);
+          throw fakeGrammyError("Too Many Requests: retry after 0.001", 0.001);
         }
         return true;
       },
     },
   } as never;
 
-  try {
-    await editHtmlMessage(
-      bot,
-      {
-        chatId: 1,
-        messageId: 2,
-        text: "hello",
-      },
-      createNoopLogger(),
-    );
-    assert.equal(calls, 3);
-  } finally {
-    global.setTimeout = originalSetTimeout;
-  }
+  await editHtmlMessage(
+    bot,
+    {
+      chatId: 1,
+      messageId: 2,
+      text: "hello",
+    },
+    createNoopLogger(),
+  );
+  assert.equal(calls, 3);
 });
 
 test("sendHtmlChunks preserves valid html across long formatted messages", async () => {
@@ -85,6 +75,55 @@ test("sendTypingAction targets the current forum topic", async () => {
   ]);
 });
 
+test("telegram calls share a bot-level cooldown after a 429", async () => {
+  let editCalls = 0;
+  let typingCalls = 0;
+  let typingStartedAt = 0;
+  const bot = {
+    api: {
+      async editMessageText() {
+        editCalls += 1;
+        if (editCalls === 1) {
+          throw fakeGrammyError("Too Many Requests: retry after 0.001", 0.001);
+        }
+        return true;
+      },
+      async sendChatAction() {
+        typingCalls += 1;
+        typingStartedAt = Date.now();
+        return true;
+      },
+    },
+  } as never;
+
+  const startedAt = Date.now();
+  const first = editHtmlMessage(
+    bot,
+    {
+      chatId: 1,
+      messageId: 2,
+      text: "hello",
+    },
+    createNoopLogger(),
+  );
+
+  await flushMicrotasks();
+  const second = sendTypingAction(
+    bot,
+    {
+      chatId: 1,
+      messageThreadId: 2,
+    },
+    createNoopLogger(),
+  );
+
+  await Promise.all([first, second]);
+
+  assert.equal(editCalls, 2);
+  assert.equal(typingCalls, 1);
+  assert.ok(typingStartedAt - startedAt >= 150);
+});
+
 test("MessageBuffer.complete falls back to sending a new final message when edit fails", async () => {
   const { bot, api, sent } = createFakeBot();
   const buffer = new MessageBuffer(bot, 1, createNoopLogger());
@@ -118,4 +157,9 @@ function fakeGrammyError(description: string, retryAfter: number): GrammyError {
 
 function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }

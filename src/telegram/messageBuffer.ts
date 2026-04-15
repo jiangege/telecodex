@@ -129,6 +129,17 @@ export class MessageBuffer {
     this.states.set(to, state);
   }
 
+  dispose(): void {
+    for (const state of this.states.values()) {
+      if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      this.stopActivityPulse(state);
+    }
+    this.states.clear();
+  }
+
   async complete(key: string, finalMarkdown?: string): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;

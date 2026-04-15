@@ -76,18 +76,24 @@ export function createFakeThreadCatalog(initialThreads: CodexThreadSummary[] = [
 
 export function createFakeBot() {
   let nextMessageId = 1;
-  const sent: Array<{ chatId: number; text: string; messageThreadId: number | null }> = [];
+  const sent: Array<{
+    chatId: number;
+    text: string;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const forumEdits: Array<{ chatId: number; messageThreadId: number; name: string }> = [];
   const deletedTopics: Array<{ chatId: number; messageThreadId: number }> = [];
 
   const api = {
-    async sendMessage(chatId: number, text: string, options?: { message_thread_id?: number | null }) {
+    async sendMessage(chatId: number, text: string, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
       sent.push({
         chatId,
         text,
         messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
       });
       return { message_id: nextMessageId++ };
     },
@@ -133,7 +139,12 @@ export function createFakeBot() {
 
 export function createFakeHandlerBot() {
   let nextMessageId = 1;
-  const sent: Array<{ chatId: number; text: string; messageThreadId: number | null }> = [];
+  const sent: Array<{
+    chatId: number;
+    text: string;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const createdTopics: Array<{ chatId: number; name: string; messageThreadId: number }> = [];
@@ -145,11 +156,12 @@ export function createFakeHandlerBot() {
   const events = new Map<string, (ctx: any) => Promise<unknown>>();
 
   const api = {
-    async sendMessage(chatId: number, text: string, options?: { message_thread_id?: number | null }) {
+    async sendMessage(chatId: number, text: string, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
       sent.push({
         chatId,
         text,
         messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
       });
       return { message_id: nextMessageId++ };
     },
