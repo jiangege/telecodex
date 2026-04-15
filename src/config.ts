@@ -12,6 +12,9 @@ export type SessionModePreset = (typeof MODE_PRESETS)[number];
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type SessionReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
+export const WEB_SEARCH_MODES = ["disabled", "cached", "live"] as const;
+export type SessionWebSearchMode = (typeof WEB_SEARCH_MODES)[number];
+
 export interface SessionRuntimeProfile {
   sandboxMode: SessionSandboxMode;
   approvalPolicy: SessionApprovalPolicy;
@@ -64,6 +67,10 @@ export function isSessionModePreset(value: string): value is SessionModePreset {
 
 export function isSessionReasoningEffort(value: string): value is SessionReasoningEffort {
   return (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+export function isSessionWebSearchMode(value: string): value is SessionWebSearchMode {
+  return (WEB_SEARCH_MODES as readonly string[]).includes(value);
 }
 
 export function profileFromPreset(preset: SessionModePreset): SessionRuntimeProfile {

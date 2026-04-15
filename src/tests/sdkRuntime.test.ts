@@ -4,9 +4,13 @@ import type { ThreadEvent, ThreadOptions } from "@openai/codex-sdk";
 import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 
 class FakeThread {
-  constructor(private readonly eventsList: ThreadEvent[]) {}
+  constructor(
+    private readonly eventsList: ThreadEvent[],
+    private readonly runCalls: Array<{ input: unknown; turnOptions: unknown }>,
+  ) {}
 
-  async runStreamed(_input: unknown, _turnOptions?: unknown): Promise<{ events: AsyncGenerator<ThreadEvent> }> {
+  async runStreamed(input: unknown, turnOptions?: unknown): Promise<{ events: AsyncGenerator<ThreadEvent> }> {
+    this.runCalls.push({ input, turnOptions });
     const events = this.eventsList;
     return {
       events: (async function* () {
@@ -21,16 +25,17 @@ class FakeThread {
 class FakeCodex {
   readonly started: ThreadOptions[] = [];
   readonly resumed: Array<{ id: string; options?: ThreadOptions }> = [];
+  readonly runCalls: Array<{ input: unknown; turnOptions: unknown }> = [];
   constructor(private readonly eventsList: ThreadEvent[]) {}
 
   startThread(options?: ThreadOptions) {
     this.started.push(options ?? {});
-    return new FakeThread(this.eventsList);
+    return new FakeThread(this.eventsList, this.runCalls);
   }
 
   resumeThread(id: string, options?: ThreadOptions) {
     this.resumed.push(options ? { id, options } : { id });
-    return new FakeThread(this.eventsList);
+    return new FakeThread(this.eventsList, this.runCalls);
   }
 }
 
@@ -59,6 +64,11 @@ test("CodexSdkRuntime starts a new thread, forwards events, and returns final re
       sandboxMode: "workspace-write",
       approvalPolicy: "on-request",
       reasoningEffort: "medium",
+      webSearchMode: null,
+      networkAccessEnabled: true,
+      skipGitRepoCheck: true,
+      additionalDirectories: [],
+      outputSchema: undefined,
     },
     prompt: "hello",
     callbacks: {
@@ -102,6 +112,11 @@ test("CodexSdkRuntime exposes active run progress while streaming", async () => 
       sandboxMode: "workspace-write",
       approvalPolicy: "on-request",
       reasoningEffort: "medium",
+      webSearchMode: null,
+      networkAccessEnabled: true,
+      skipGitRepoCheck: true,
+      additionalDirectories: [],
+      outputSchema: undefined,
     },
     prompt: "hello",
     callbacks: {
@@ -147,6 +162,11 @@ test("CodexSdkRuntime resumes an existing thread id", async () => {
       sandboxMode: "read-only",
       approvalPolicy: "never",
       reasoningEffort: null,
+      webSearchMode: null,
+      networkAccessEnabled: true,
+      skipGitRepoCheck: true,
+      additionalDirectories: [],
+      outputSchema: undefined,
     },
     prompt: "continue",
   });
@@ -156,4 +176,68 @@ test("CodexSdkRuntime resumes an existing thread id", async () => {
   assert.equal(fakeCodex.resumed[0]?.id, "thread-existing");
   assert.equal(result.threadId, "thread-existing");
   assert.equal(result.finalResponse, "continued");
+});
+
+test("CodexSdkRuntime passes non-auth SDK options through", async () => {
+  const events: ThreadEvent[] = [
+    { type: "thread.started", thread_id: "thread-options" },
+    { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+  ];
+  const fakeCodex = new FakeCodex(events);
+  const runtime = new CodexSdkRuntime({
+    codexBin: "codex",
+    codex: fakeCodex as never,
+  });
+  const outputSchema = {
+    type: "object",
+    properties: {
+      ok: {
+        type: "boolean",
+      },
+    },
+  };
+
+  await runtime.run({
+    profile: {
+      sessionKey: "session-options",
+      threadId: null,
+      cwd: process.cwd(),
+      model: "gpt-5.4",
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-failure",
+      reasoningEffort: "high",
+      webSearchMode: "live",
+      networkAccessEnabled: false,
+      skipGitRepoCheck: false,
+      additionalDirectories: [process.cwd()],
+      outputSchema,
+    },
+    prompt: [
+      {
+        type: "text",
+        text: "describe image",
+      },
+      {
+        type: "local_image",
+        path: "/tmp/example.png",
+      },
+    ],
+  });
+
+  assert.deepEqual(fakeCodex.started[0], {
+    model: "gpt-5.4",
+    sandboxMode: "workspace-write",
+    workingDirectory: process.cwd(),
+    skipGitRepoCheck: false,
+    modelReasoningEffort: "high",
+    networkAccessEnabled: false,
+    webSearchMode: "live",
+    additionalDirectories: [process.cwd()],
+    approvalPolicy: "on-failure",
+  });
+  assert.deepEqual(fakeCodex.runCalls[0]?.turnOptions, {
+    signal: fakeCodex.runCalls[0]?.turnOptions && (fakeCodex.runCalls[0].turnOptions as { signal: AbortSignal }).signal,
+    outputSchema,
+  });
+  assert.ok((fakeCodex.runCalls[0]?.turnOptions as { signal?: AbortSignal } | undefined)?.signal instanceof AbortSignal);
 });

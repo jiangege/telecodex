@@ -28,39 +28,50 @@ The bot talks to local Codex through `@openai/codex-sdk`, which wraps the local
 - One topic maps to one Codex SDK thread.
 - Each topic has at most one active SDK run.
 - Follow-up messages during an active run are queued and processed in order.
+- Text and image messages are mapped to Codex SDK input.
 - A run immediately creates a normal Telegram status message; progress edits that message.
 - telecodex does not use pinned messages for live state.
 - While a run is pending, the bot sends Telegram `typing` activity so the chat does not look dead during long SDK gaps.
 - `/status` is the source of truth for runtime state, active thread id, last SDK event, and queue depth.
 
-## Setup
+## Requirements
 
-1. Make sure local Codex is installed.
-2. Make sure local Codex is logged in:
+- Node.js 24 or newer.
+- A local `codex` CLI installation available on `PATH`.
+- A valid local Codex login:
 
 ```bash
 codex login status
 ```
 
-3. Install dependencies:
+- A Telegram bot token.
+
+## Install from npm
+
+```bash
+npm install -g telecodex
+telecodex
+```
+
+`telecodex` uses the local `codex` CLI at runtime, so installing this package
+does not replace the separate Codex CLI installation.
+
+## Local development
+
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-4. Install the local `telecodex` command:
+2. Start it:
 
 ```bash
-npm link
+npm run dev
 ```
 
-5. Start it:
-
-```bash
-telecodex
-```
-
-For local development, `npm run dev` runs the same entrypoint without linking.
+For a production-style local install during development, `npm link` exposes the
+same `telecodex` command globally from the current checkout.
 
 ## First launch
 
@@ -74,6 +85,10 @@ On first launch, `telecodex`:
 
 There are no required environment variables in the normal startup path.
 
+Optional security override:
+
+- `TELECODEX_ALLOW_PLAINTEXT_TOKEN_FALLBACK=1` allows storing the Telegram bot token unencrypted in local state when the system keychain is unavailable. This is disabled by default.
+
 ## Working model
 
 - Private chat is only for bootstrap and lightweight management.
@@ -86,7 +101,7 @@ There are no required environment variables in the normal startup path.
 
 ## Stored state
 
-- Telegram bot token: stored in the system keychain when available, otherwise falls back to local state.
+- Telegram bot token: stored in the system keychain when available. Plaintext local fallback is disabled by default and must be opted into explicitly.
 - Admin binding, project bindings, and topic/session state: stored in a local SQLite database under `~/.telecodex/`.
 - Runtime logs: written by `pino` to `~/.telecodex/logs/telecodex.log`.
 - Working directory: defaults to the directory where you ran `telecodex`.
@@ -116,6 +131,13 @@ There are no required environment variables in the normal startup path.
 - `/yolo on|off` - quick toggle for `danger-full-access + never` on the current topic.
 - `/model <model-id>` - set model for the current topic.
 - `/effort default|minimal|low|medium|high|xhigh` - set model reasoning effort for the current topic.
+- `/web default|disabled|cached|live` - set Codex SDK web search mode.
+- `/network on|off` - set workspace network access for Codex SDK runs.
+- `/gitcheck skip|enforce` - control Codex SDK git repository checks.
+- `/adddir list|add <absolute-path>|drop <index>|clear` - manage Codex SDK additional directories.
+- `/schema show|set <JSON object>|clear` - manage Codex SDK output schema for the current topic.
+- `/codexconfig show|set <JSON object>|clear` - manage global non-auth Codex SDK config overrides for future runs.
+- Image messages in a topic - download the Telegram image locally and send it as SDK `local_image` input.
 
 ## Notes
 
@@ -123,4 +145,5 @@ There are no required environment variables in the normal startup path.
 - Streaming updates are throttled before editing Telegram messages.
 - Final answers are rendered from Markdown to Telegram-safe HTML.
 - Because the SDK run is in-process, a telecodex restart cannot resume a partially streamed Telegram turn; the topic is reset and the user is asked to resend.
+- Authentication and provider switching remain owned by the local Codex installation; telecodex does not manage API keys or login state.
 - Interactive terminal stdin bridging and native Codex approval UI are intentionally not part of the Telegram contract. For unattended remote work, use the topic's sandbox/approval preset deliberately.

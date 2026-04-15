@@ -75,6 +75,12 @@ export function createFakeBot() {
       });
       return true;
     },
+    async getFile(fileId: string) {
+      return {
+        file_id: fileId,
+        file_path: `photos/${fileId}.jpg`,
+      };
+    },
     async editForumTopic(chatId: number, messageThreadId: number, input: { name: string }) {
       forumEdits.push({ chatId, messageThreadId, name: input.name });
       return true;
@@ -126,6 +132,12 @@ export function createFakeHandlerBot() {
         messageThreadId: options?.message_thread_id ?? null,
       });
       return true;
+    },
+    async getFile(fileId: string) {
+      return {
+        file_id: fileId,
+        file_path: `photos/${fileId}.jpg`,
+      };
     },
     async createForumTopic(chatId: number, name: string) {
       const messageThreadId = nextMessageId++;

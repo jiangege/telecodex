@@ -31,7 +31,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
     const project = getProjectForContext(ctx, projects);
     if (!project) {
-      await ctx.reply("当前 supergroup 还没有绑定项目。\n先执行 /project bind <绝对路径>");
+      await ctx.reply("This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
       return;
     }
 
@@ -50,24 +50,29 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
     await ctx.reply(
       [
-        "状态",
+        "Status",
         `project: ${project.name}`,
         `root: ${project.cwd}`,
-        `thread: ${latestSession.codexThreadId ?? "待创建"}`,
+        `thread: ${latestSession.codexThreadId ?? "not created"}`,
         `state: ${formatSessionRuntimeStatus(latestSession.runtimeStatus)}`,
-        `state detail: ${latestSession.runtimeStatusDetail ?? "无"}`,
+        `state detail: ${latestSession.runtimeStatusDetail ?? "none"}`,
         `state updated: ${formatIsoTimestamp(latestSession.runtimeStatusUpdatedAt)}`,
-        `active turn: ${latestSession.activeTurnId ?? "无"}`,
-        `active run: ${activeRun ? formatIsoTimestamp(activeRun.startedAt) : "无"}`,
-        `active run thread: ${activeRun?.threadId ?? "无"}`,
-        `active run last event: ${activeRun?.lastEventType ?? "无"}`,
-        `active run last update: ${activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "无"}`,
+        `active turn: ${latestSession.activeTurnId ?? "none"}`,
+        `active run: ${activeRun ? formatIsoTimestamp(activeRun.startedAt) : "none"}`,
+        `active run thread: ${activeRun?.threadId ?? "none"}`,
+        `active run last event: ${activeRun?.lastEventType ?? "none"}`,
+        `active run last update: ${activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "none"}`,
         `queue: ${queueDepth}`,
         `queue next: ${formatQueuedPreview(queuedPreview)}`,
         `cwd: ${latestSession.cwd}`,
         `preset: ${presetFromProfile(latestSession)}`,
         `sandbox: ${latestSession.sandboxMode}`,
         `approval: ${latestSession.approvalPolicy}`,
+        `network: ${latestSession.networkAccessEnabled ? "on" : "off"}`,
+        `web: ${latestSession.webSearchMode ?? "codex-default"}`,
+        `git check: ${latestSession.skipGitRepoCheck ? "skip" : "enforce"}`,
+        `add dirs: ${latestSession.additionalDirectories.length}`,
+        `schema: ${latestSession.outputSchema ? "set" : "none"}`,
         `model: ${latestSession.model}`,
         `effort: ${formatReasoningEffort(latestSession.reasoningEffort)}`,
       ].join("\n"),
@@ -84,12 +89,12 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
       const queueDepth = store.getQueuedInputCount(session.sessionKey);
       await ctx.reply(
         [
-          "队列",
+          "Queue",
           `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
-          `active turn: ${session.activeTurnId ?? "无"}`,
+          `active turn: ${session.activeTurnId ?? "none"}`,
           `queue: ${queueDepth}`,
-          queued.length > 0 ? `items:\n${formatQueuedItems(queued)}` : "items: 空",
-          "用法: /queue | /queue drop <id> | /queue clear",
+          queued.length > 0 ? `items:\n${formatQueuedItems(queued)}` : "items: none",
+          "Usage: /queue | /queue drop <id> | /queue clear",
         ].join("\n"),
       );
       return;
@@ -97,22 +102,22 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
     if (command === "clear") {
       const removed = store.clearQueuedInputs(session.sessionKey);
-      await ctx.reply(`已清空队列，删除 ${removed} 条待处理消息。`);
+      await ctx.reply(`Cleared the queue and removed ${removed} pending message(s).`);
       return;
     }
 
     if (command === "drop") {
       const id = Number(args);
       if (!Number.isInteger(id) || id <= 0) {
-        await ctx.reply("用法: /queue drop <id>");
+        await ctx.reply("Usage: /queue drop <id>");
         return;
       }
       const removed = store.removeQueuedInputForSession(session.sessionKey, id);
-      await ctx.reply(removed ? `已移除队列项 #${id}。` : `没有找到队列项 #${id}。`);
+      await ctx.reply(removed ? `Removed queued item #${id}.` : `Queued item #${id} was not found.`);
       return;
     }
 
-    await ctx.reply("用法: /queue | /queue drop <id> | /queue clear");
+    await ctx.reply("Usage: /queue | /queue drop <id> | /queue clear");
   });
 
   bot.command("stop", async (ctx) => {
@@ -121,26 +126,26 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
     const latest = store.get(session.sessionKey) ?? session;
     if (!codex.isRunning(session.sessionKey)) {
-      await ctx.reply("当前没有正在运行的 Codex SDK turn。");
+      await ctx.reply("There is no active Codex SDK turn right now.");
       return;
     }
 
     try {
       codex.interrupt(session.sessionKey);
-      await ctx.reply("已请求中断当前运行，等待 Codex SDK 停止。");
+      await ctx.reply("Interrupt requested for the current run. Waiting for Codex SDK to stop.");
     } catch (error) {
       logger?.warn("interrupt turn failed", {
         ...contextLogFields(ctx),
         ...sessionLogFields(latest),
         error,
       });
-      await ctx.reply(`中断失败: ${error instanceof Error ? error.message : String(error)}`);
+      await ctx.reply(`Interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
 }
 
 function formatQueuedPreview(items: Array<{ text: string }>): string {
-  if (items.length === 0) return "空";
+  if (items.length === 0) return "none";
   return items.map((item) => singleLinePreview(item.text)).join(" | ");
 }
 

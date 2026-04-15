@@ -7,7 +7,7 @@ export function sessionBufferKey(sessionKey: string): string {
 export function formatIsoTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", {
+  return date.toLocaleString("en-GB", {
     hour12: false,
   });
 }
@@ -28,6 +28,9 @@ export function sessionLogFields(session: TelegramSession): Record<string, strin
     sandboxMode: session.sandboxMode,
     approvalPolicy: session.approvalPolicy,
     reasoningEffort: session.reasoningEffort,
+    webSearchMode: session.webSearchMode,
+    networkAccessEnabled: session.networkAccessEnabled ? "true" : "false",
+    skipGitRepoCheck: session.skipGitRepoCheck ? "true" : "false",
     runtimeStatus: session.runtimeStatus,
     runtimeStatusDetail: session.runtimeStatusDetail,
     codexThreadId: session.codexThreadId,
@@ -42,12 +45,12 @@ export function isSessionBusy(session: TelegramSession): boolean {
 export function describeBusyStatus(status: TelegramSession["runtimeStatus"]): string {
   switch (status) {
     case "preparing":
-      return "准备中";
+      return "preparing";
     case "running":
-      return "运行中";
+      return "running";
     case "failed":
-      return "故障后恢复中";
+      return "recovering after a failed run";
     default:
-      return "处理中";
+      return "processing";
   }
 }

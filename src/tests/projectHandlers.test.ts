@@ -58,8 +58,8 @@ test("/thread new creates a fresh topic session and posts a ready message", asyn
     assert.ok(session);
     assert.equal(session?.codexThreadId, null);
     assert.equal(session?.cwd, process.cwd());
-    assert.ok(sent.some((entry) => entry.text.includes("新 topic 已创建。")));
-    assert.match(replies.at(-1) ?? "", /已创建新 topic/);
+    assert.ok(sent.some((entry) => entry.text.includes("New topic created.")));
+    assert.match(replies.at(-1) ?? "", /Created a new topic/);
   } finally {
     cleanup();
   }
@@ -95,8 +95,8 @@ test("/thread resume creates a topic and binds it to a known thread id", async (
     const session = store.get(`-100:${createdTopics[0]!.messageThreadId}`);
     assert.ok(session);
     assert.equal(session?.codexThreadId, "thread-401");
-    assert.ok(sent.some((entry) => entry.text.includes("这个 topic 已绑定到已有 Codex thread id。")));
-    assert.match(replies.at(-1) ?? "", /已创建 topic 并绑定到已有 thread id/);
+    assert.ok(sent.some((entry) => entry.text.includes("This topic is now bound to an existing Codex thread id.")));
+    assert.match(replies.at(-1) ?? "", /Created a topic and bound it to the existing thread id/);
   } finally {
     cleanup();
   }

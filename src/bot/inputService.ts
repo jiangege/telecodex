@@ -2,6 +2,7 @@ import type { Bot } from "grammy";
 import type {
   CommandExecutionItem,
   FileChangeItem,
+  Input,
   McpToolCallItem,
   ThreadEvent,
   ThreadItem,
@@ -10,7 +11,7 @@ import type {
 } from "@openai/codex-sdk";
 import type { Logger } from "../runtime/logger.js";
 import { applySessionRuntimeEvent } from "../runtime/sessionRuntime.js";
-import type { SessionStore, TelegramSession } from "../store/sessions.js";
+import { type SessionStore, type StoredCodexInput, type TelegramSession } from "../store/sessions.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { sendPlainChunks } from "../telegram/delivery.js";
 import { CodexSdkRuntime, isAbortError } from "../codex/sdkRuntime.js";
@@ -39,7 +40,29 @@ export async function handleUserText(input: {
   logger?: Logger;
   enqueueIfBusy?: boolean;
 }): Promise<HandleUserTextResult> {
-  const { text, store, codex, buffers, bot, logger } = input;
+  return handleUserInput({
+    prompt: input.text,
+    session: input.session,
+    store: input.store,
+    codex: input.codex,
+    buffers: input.buffers,
+    bot: input.bot,
+    ...(input.logger ? { logger: input.logger } : {}),
+    ...(input.enqueueIfBusy == null ? {} : { enqueueIfBusy: input.enqueueIfBusy }),
+  });
+}
+
+export async function handleUserInput(input: {
+  prompt: StoredCodexInput;
+  session: TelegramSession;
+  store: SessionStore;
+  codex: CodexSdkRuntime;
+  buffers: MessageBuffer;
+  bot: Bot;
+  logger?: Logger;
+  enqueueIfBusy?: boolean;
+}): Promise<HandleUserTextResult> {
+  const { prompt, store, codex, buffers, bot, logger } = input;
   const enqueueIfBusy = input.enqueueIfBusy ?? true;
   const session = await refreshSessionIfActiveTurnIsStale(input.session, store, codex, bot, logger);
 
@@ -51,7 +74,7 @@ export async function handleUserText(input: {
       };
     }
 
-    const queued = store.enqueueInput(session.sessionKey, text);
+    const queued = store.enqueueInput(session.sessionKey, prompt);
     const queueDepth = store.getQueuedInputCount(session.sessionKey);
     await sendPlainChunks(
       bot,
@@ -59,10 +82,10 @@ export async function handleUserText(input: {
         chatId: numericChatId(session),
         messageThreadId: numericMessageThreadId(session),
         text: [
-          `当前 Codex 任务仍在${describeBusyStatus(session.runtimeStatus)}，已把你的消息加入队列。`,
+          `The current Codex task is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
           `queue position: ${queueDepth}`,
           `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
-          "当前运行结束后会自动继续处理。",
+          "It will be processed automatically after the current run finishes.",
         ].join("\n"),
       },
       logger,
@@ -124,7 +147,7 @@ export async function handleUserText(input: {
 
   void runSessionPrompt({
     sessionKey: session.sessionKey,
-    text,
+    prompt,
     store,
     codex,
     buffers,
@@ -159,7 +182,7 @@ export async function refreshSessionIfActiveTurnIsStale(
     event: {
       type: "turn.failed",
       turnId: latest.activeTurnId,
-      message: "上一次运行已丢失，请重新发送。",
+      message: "The previous run was lost. Send the message again.",
     },
     logger,
   });
@@ -192,7 +215,7 @@ export async function recoverActiveTopicSessions(
       {
         chatId: numericChatId(refreshed),
         messageThreadId: numericMessageThreadId(refreshed),
-        text: "telecodex 重启后无法恢复上一轮流式运行状态，请重新发送需要继续的消息。",
+        text: "telecodex restarted and cannot resume the previous streamed run state. Send the message again if you want to continue.",
       },
       logger,
     ).catch((error) => {
@@ -218,8 +241,8 @@ export async function processNextQueuedInputForSession(
   if (!next) return;
 
   try {
-    const result = await handleUserText({
-      text: next.text,
+    const result = await handleUserInput({
+      prompt: next.input,
       session,
       store,
       codex,
@@ -242,7 +265,7 @@ export async function processNextQueuedInputForSession(
 
 async function runSessionPrompt(input: {
   sessionKey: string;
-  text: string;
+  prompt: StoredCodexInput;
   store: SessionStore;
   codex: CodexSdkRuntime;
   buffers: MessageBuffer;
@@ -251,7 +274,7 @@ async function runSessionPrompt(input: {
   bufferKey: string;
   logger?: Logger;
 }): Promise<void> {
-  const { sessionKey, text, store, codex, buffers, bot, turnId, bufferKey, logger } = input;
+  const { sessionKey, prompt, store, codex, buffers, bot, turnId, bufferKey, logger } = input;
   const session = store.get(sessionKey);
   if (!session) return;
 
@@ -265,8 +288,13 @@ async function runSessionPrompt(input: {
         sandboxMode: session.sandboxMode,
         approvalPolicy: session.approvalPolicy,
         reasoningEffort: session.reasoningEffort,
+        webSearchMode: session.webSearchMode,
+        networkAccessEnabled: session.networkAccessEnabled,
+        skipGitRepoCheck: session.skipGitRepoCheck,
+        additionalDirectories: session.additionalDirectories,
+        outputSchema: parseOutputSchema(session.outputSchema),
       },
-      prompt: text,
+      prompt: toSdkInput(prompt),
       callbacks: {
         onThreadStarted: async (threadId) => {
           store.bindThread(sessionKey, threadId);
@@ -317,7 +345,7 @@ async function runSessionPrompt(input: {
     }
 
     if (isAbortError(error)) {
-      await buffers.fail(bufferKey, "已中断当前运行。");
+      await buffers.fail(bufferKey, "Current run interrupted.");
     } else {
       await buffers.fail(bufferKey, error instanceof Error ? error.message : String(error));
     }
@@ -336,7 +364,7 @@ async function projectEventToTelegramBuffer(
       buffers.note(key, `thread started: ${event.thread_id}`);
       return;
     case "turn.started":
-      buffers.note(key, "开始处理");
+      buffers.note(key, "started processing");
       return;
     case "turn.completed":
       buffers.note(
@@ -350,10 +378,10 @@ async function projectEventToTelegramBuffer(
       projectItem(buffers, key, event.item, event.type);
       return;
     case "turn.failed":
-      buffers.note(key, `运行失败: ${event.error.message}`);
+      buffers.note(key, `run failed: ${event.error.message}`);
       return;
     case "error":
-      buffers.note(key, `错误: ${event.message}`);
+      buffers.note(key, `error: ${event.message}`);
       return;
   }
 }
@@ -387,7 +415,7 @@ function projectItem(
       projectTodoList(buffers, key, item);
       return;
     case "error":
-      buffers.note(key, `错误: ${truncateSingleLine(item.message, 120)}`);
+      buffers.note(key, `error: ${truncateSingleLine(item.message, 120)}`);
       return;
   }
 }
@@ -399,10 +427,10 @@ function projectCommandExecution(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.started") {
-    buffers.note(key, `命令: ${truncateSingleLine(item.command, 120)}`);
+    buffers.note(key, `command: ${truncateSingleLine(item.command, 120)}`);
   } else if (phase === "item.completed") {
     const exitCode = item.exit_code == null ? "?" : String(item.exit_code);
-    const prefix = item.status === "failed" ? "命令失败" : "命令完成";
+    const prefix = item.status === "failed" ? "command failed" : "command completed";
     buffers.note(key, `${prefix}: ${truncateSingleLine(item.command, 96)} (exit ${exitCode})`);
   }
 
@@ -418,13 +446,13 @@ function projectFileChange(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.started") {
-    buffers.note(key, `文件修改: ${item.changes.length} 项`);
+    buffers.note(key, `file changes: ${item.changes.length} entries`);
     return;
   }
 
   if (phase === "item.completed") {
-    const prefix = item.status === "failed" ? "文件修改失败" : "文件修改完成";
-    buffers.note(key, `${prefix}: ${item.changes.length} 项`);
+    const prefix = item.status === "failed" ? "file changes failed" : "file changes completed";
+    buffers.note(key, `${prefix}: ${item.changes.length} entries`);
   }
 }
 
@@ -442,7 +470,7 @@ function projectMcpToolCall(
   if (phase === "item.completed") {
     buffers.note(
       key,
-      item.error ? `MCP失败: ${item.server}/${item.tool}` : `MCP完成: ${item.server}/${item.tool}`,
+      item.error ? `MCP failed: ${item.server}/${item.tool}` : `MCP completed: ${item.server}/${item.tool}`,
     );
   }
 }
@@ -454,14 +482,16 @@ function projectWebSearch(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.completed") {
-    buffers.note(key, `搜索完成: ${truncateSingleLine(item.query, 120)}`);
+    buffers.note(key, `web search completed: ${truncateSingleLine(item.query, 120)}`);
     return;
   }
-  buffers.note(key, `搜索: ${truncateSingleLine(item.query, 120)}`);
+  buffers.note(key, `web search: ${truncateSingleLine(item.query, 120)}`);
 }
 
 function projectTodoList(buffers: MessageBuffer, key: string, item: TodoListItem): void {
-  const lines = item.items.slice(0, 6).map((entry) => `${entry.completed ? "[完成]" : "[待办]"} ${truncateSingleLine(entry.text, 96)}`);
+  const lines = item.items
+    .slice(0, 6)
+    .map((entry) => `${entry.completed ? "[done]" : "[todo]"} ${truncateSingleLine(entry.text, 96)}`);
   if (lines.length > 0) {
     buffers.setPlan(key, lines.join("\n"));
   }
@@ -469,4 +499,13 @@ function projectTodoList(buffers: MessageBuffer, key: string, item: TodoListItem
 
 function createLocalTurnId(): string {
   return `sdk-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function toSdkInput(input: StoredCodexInput): Input {
+  return input;
+}
+
+function parseOutputSchema(value: string | null): unknown {
+  if (!value) return undefined;
+  return JSON.parse(value) as unknown;
 }

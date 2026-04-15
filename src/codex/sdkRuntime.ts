@@ -1,14 +1,16 @@
 import {
   Codex,
   type ApprovalMode,
+  type CodexOptions,
   type Input,
   type RunResult,
   type SandboxMode,
   type ThreadEvent,
   type ThreadItem,
   type ThreadOptions,
+  type WebSearchMode,
 } from "@openai/codex-sdk";
-import type { SessionApprovalPolicy, SessionReasoningEffort, SessionSandboxMode } from "../config.js";
+import type { SessionApprovalPolicy, SessionReasoningEffort, SessionSandboxMode, SessionWebSearchMode } from "../config.js";
 import type { Logger } from "../runtime/logger.js";
 
 export interface SessionRunProfile {
@@ -19,6 +21,11 @@ export interface SessionRunProfile {
   sandboxMode: SessionSandboxMode;
   approvalPolicy: SessionApprovalPolicy;
   reasoningEffort: SessionReasoningEffort | null;
+  webSearchMode: SessionWebSearchMode | null;
+  networkAccessEnabled: boolean;
+  skipGitRepoCheck: boolean;
+  additionalDirectories: string[];
+  outputSchema: unknown;
 }
 
 export interface ActiveRun {
@@ -41,15 +48,22 @@ export interface RunCallbacks {
 }
 
 export class CodexSdkRuntime {
-  private readonly codex: Pick<Codex, "startThread" | "resumeThread">;
+  private codex: Pick<Codex, "startThread" | "resumeThread">;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private configOverrides: CodexOptions["config"] | undefined;
+  private readonly injectedCodex: Pick<Codex, "startThread" | "resumeThread"> | null;
 
-  constructor(input: { codexBin: string; logger?: Logger; codex?: Pick<Codex, "startThread" | "resumeThread"> }) {
-    this.codex =
-      input.codex ??
-      new Codex({
-        codexPathOverride: input.codexBin,
-      });
+  constructor(private readonly input: { codexBin: string; logger?: Logger; configOverrides?: CodexOptions["config"]; codex?: Pick<Codex, "startThread" | "resumeThread"> }) {
+    this.configOverrides = input.configOverrides;
+    this.injectedCodex = input.codex ?? null;
+    this.codex = input.codex ?? this.createCodex();
+  }
+
+  setConfigOverrides(configOverrides: CodexOptions["config"] | undefined): void {
+    this.configOverrides = configOverrides;
+    if (!this.injectedCodex) {
+      this.codex = this.createCodex();
+    }
   }
 
   isRunning(sessionKey: string): boolean {
@@ -73,6 +87,13 @@ export class CodexSdkRuntime {
     }
   }
 
+  private createCodex(): Codex {
+    return new Codex({
+      codexPathOverride: this.input.codexBin,
+      ...(this.configOverrides ? { config: this.configOverrides } : {}),
+    });
+  }
+
   async run(input: {
     profile: SessionRunProfile;
     prompt: Input;
@@ -94,6 +115,7 @@ export class CodexSdkRuntime {
       signal: abortController.signal,
       initialThreadId: input.profile.threadId,
       sessionKey: input.profile.sessionKey,
+      outputSchema: input.profile.outputSchema,
       ...(input.callbacks ? { callbacks: input.callbacks } : {}),
     });
     const startedAt = new Date().toISOString();
@@ -122,10 +144,12 @@ export class CodexSdkRuntime {
     signal: AbortSignal;
     initialThreadId: string | null;
     sessionKey: string;
+    outputSchema: unknown;
     callbacks?: RunCallbacks;
   }): Promise<RunResultWithThread> {
     const streamed = await input.thread.runStreamed(input.prompt, {
       signal: input.signal,
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
     });
     const items = new Map<string, ThreadItem>();
     let finalResponse = "";
@@ -195,9 +219,11 @@ function toThreadOptions(profile: SessionRunProfile): ThreadOptions {
     model: profile.model,
     sandboxMode: toSandboxMode(profile.sandboxMode),
     workingDirectory: profile.cwd,
-    skipGitRepoCheck: true,
+    skipGitRepoCheck: profile.skipGitRepoCheck,
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
-    networkAccessEnabled: true,
+    networkAccessEnabled: profile.networkAccessEnabled,
+    ...(profile.webSearchMode ? { webSearchMode: toWebSearchMode(profile.webSearchMode) } : {}),
+    ...(profile.additionalDirectories.length > 0 ? { additionalDirectories: profile.additionalDirectories } : {}),
     approvalPolicy: toApprovalMode(profile.approvalPolicy),
   };
 }
@@ -208,5 +234,9 @@ function toSandboxMode(value: SessionSandboxMode): SandboxMode {
 
 function toApprovalMode(value: SessionApprovalPolicy): ApprovalMode {
   if (value === "on-failure") return "on-failure";
+  return value;
+}
+
+function toWebSearchMode(value: SessionWebSearchMode): WebSearchMode {
   return value;
 }

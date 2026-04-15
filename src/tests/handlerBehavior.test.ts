@@ -74,7 +74,7 @@ test("handleUserText queues when a session already has an active SDK run", async
 
     assert.equal(result.status, "queued");
     assert.equal(store.getQueuedInputCount(session.sessionKey), 1);
-    assert.match(sent.at(-1)?.text ?? "", /已把你的消息加入队列/);
+    assert.match(sent.at(-1)?.text ?? "", /Your message was added to the queue/);
   } finally {
     cleanup();
   }

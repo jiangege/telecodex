@@ -19,7 +19,11 @@ import { openDatabase } from "../store/db.js";
 import { ProjectStore } from "../store/projects.js";
 import { SessionStore } from "../store/sessions.js";
 import { getStateDbPath } from "./appPaths.js";
-import { SecretStore, type TokenStorageMode } from "./secrets.js";
+import {
+  PLAINTEXT_TOKEN_FALLBACK_ENV,
+  SecretStore,
+  type TokenStorageMode,
+} from "./secrets.js";
 
 const MAC_CODEX_BIN = "/Applications/Codex.app/Contents/Resources/codex";
 
@@ -38,14 +42,16 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   const db = openDatabase(dbPath);
   const store = new SessionStore(db);
   const projects = new ProjectStore(db);
-  const secrets = new SecretStore(store);
+  const secrets = new SecretStore(store, {
+    allowPlaintextFallback: process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
+  });
 
   const codexBin = await ensureCodexBin(store);
   await ensureCodexLogin(codexBin);
 
   const { token, botUsername, storageMode } = await ensureTelegramBotToken(secrets);
   if (storageMode === "plaintext-fallback") {
-    note("系统 keychain 不可用。Telegram bot token 已回退保存到本地状态库。", "Token Storage");
+    note("System keychain unavailable. Telegram bot token fell back to local state storage.", "Token Storage");
   }
 
   const config = buildConfig({
@@ -69,8 +75,8 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
       [
         `Bot: ${botUsername ? `@${botUsername}` : "unknown"}`,
         `Workspace: ${config.defaultCwd}`,
-        copied ? "绑定码已复制到剪贴板。" : "绑定码复制失败，请手动复制。",
-        "该绑定码会一直有效，直到有管理员成功绑定。",
+        copied ? "Binding code copied to the clipboard." : "Failed to copy the binding code. Copy it manually.",
+        "This binding code stays valid until an admin account successfully claims it.",
         "",
         bootstrapCode,
       ].join("\n"),
@@ -100,7 +106,7 @@ async function ensureTelegramBotToken(
         storageMode: "existing",
       };
     }
-    note("已保存的 Telegram bot token 无法通过校验，请重新输入。", "Telegram");
+    note("The saved Telegram bot token failed validation. Enter it again.", "Telegram");
   }
 
   while (true) {
@@ -110,20 +116,20 @@ async function ensureTelegramBotToken(
     });
     const token = requirePromptValue(raw).trim();
     if (!token) {
-      note("Bot token 不能为空。", "Telegram");
+      note("Bot token cannot be empty.", "Telegram");
       continue;
     }
 
     const validating = spinner();
-    validating.start("正在验证 Telegram bot token");
+    validating.start("Validating Telegram bot token");
     const validated = await validateTelegramBotToken(token);
     if (!validated) {
-      validating.stop("Telegram bot token 验证失败");
+      validating.stop("Telegram bot token validation failed");
       continue;
     }
 
     const storageMode = secrets.setTelegramBotToken(token);
-    validating.stop(`Telegram bot 已验证: @${validated.username ?? "unknown"}`);
+    validating.stop(`Telegram bot verified: @${validated.username ?? "unknown"}`);
     return {
       token,
       botUsername: validated.username,
@@ -139,11 +145,11 @@ async function validateTelegramBotToken(token: string): Promise<{ username: stri
     return { username: me.username ?? null };
   } catch (error) {
     if (error instanceof GrammyError) {
-      note(`Telegram 返回错误: ${error.description}`, "Telegram");
+      note(`Telegram returned an error: ${error.description}`, "Telegram");
       return null;
     }
     if (error instanceof HttpError) {
-      note(`无法连接 Telegram: ${error.message}`, "Telegram");
+      note(`Unable to reach Telegram: ${error.message}`, "Telegram");
       return null;
     }
     note(error instanceof Error ? error.message : String(error), "Telegram");
@@ -161,7 +167,7 @@ async function ensureCodexBin(store: SessionStore): Promise<string> {
     }
   }
 
-  note("未能自动找到可用的 Codex 可执行文件。", "Codex");
+  note("Could not automatically find a working Codex binary.", "Codex");
   while (true) {
     const raw = await text({
       message: "Path to codex binary",
@@ -169,11 +175,11 @@ async function ensureCodexBin(store: SessionStore): Promise<string> {
     });
     const candidate = path.resolve(requirePromptValue(raw).trim());
     if (!candidate) {
-      note("Codex 路径不能为空。", "Codex");
+      note("Codex path cannot be empty.", "Codex");
       continue;
     }
     if (!isWorkingCodexBin(candidate)) {
-      note("该路径不是可执行的 Codex 二进制。", "Codex");
+      note("That path is not an executable Codex binary.", "Codex");
       continue;
     }
     store.setAppState("codex_bin", candidate);
@@ -195,21 +201,21 @@ async function ensureCodexLogin(codexBin: string): Promise<void> {
     const status = readCodexLoginStatus(codexBin);
     if (status.loggedIn) return;
 
-    note(status.message || "Codex 尚未登录。", "Codex Login");
+    note(status.message || "Codex is not logged in.", "Codex Login");
     const shouldLogin = await confirm({
-      message: "现在运行 `codex login` 吗？",
+      message: "Run `codex login` now?",
       initialValue: true,
     });
     if (isCancel(shouldLogin)) exitCancelled();
     if (!shouldLogin) {
-      throw new Error("Codex 登录是启动 telecodex 的前置条件。");
+      throw new Error("Codex login is required before starting telecodex.");
     }
 
     const result = spawnSync(codexBin, ["login"], {
       stdio: "inherit",
     });
     if (result.error) {
-      throw new Error(`运行 codex login 失败: ${result.error.message}`);
+      throw new Error(`Failed to run codex login: ${result.error.message}`);
     }
   }
 }

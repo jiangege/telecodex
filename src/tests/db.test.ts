@@ -76,11 +76,21 @@ test("openDatabase migrates a legacy database to the latest schema version", () 
     assert.equal(sessionColumns.has("telegram_topic_name"), true);
     assert.equal(sessionColumns.has("runtime_status"), true);
     assert.equal(sessionColumns.has("runtime_status_updated_at"), true);
+    assert.equal(sessionColumns.has("web_search_mode"), true);
+    assert.equal(sessionColumns.has("network_access_enabled"), true);
+    assert.equal(sessionColumns.has("skip_git_repo_check"), true);
+    assert.equal(sessionColumns.has("additional_directories"), true);
+    assert.equal(sessionColumns.has("output_schema"), true);
     assert.equal(sessionColumns.has("mode"), false);
     assert.equal(sessionColumns.has("thread_bootstrap_state"), false);
     assert.equal(sessionColumns.has("pinned_status_text_hash"), false);
     assert.equal((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turn_deliveries'").get() as unknown) == null, true);
     assert.equal((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_interactions'").get() as unknown) == null, true);
+
+    const queueColumns = new Set(
+      (db.prepare("PRAGMA table_info(queued_inputs)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    assert.equal(queueColumns.has("input_json"), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

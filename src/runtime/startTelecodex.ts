@@ -1,4 +1,5 @@
 import { run } from "@grammyjs/runner";
+import type { CodexOptions } from "@openai/codex-sdk";
 import { createBot } from "../bot/createBot.js";
 import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import { bootstrapRuntime } from "./bootstrap.js";
@@ -27,9 +28,11 @@ export async function startTelecodex(): Promise<void> {
     });
 
     const { config, store, projects, bootstrapCode, botUsername } = await bootstrapRuntime();
+    const configOverrides = parseCodexConfigOverrides(store.getAppState("codex_config_overrides"));
     const codex = new CodexSdkRuntime({
       codexBin: config.codexBin,
       logger: logger.child("codex-sdk"),
+      ...(configOverrides ? { configOverrides } : {}),
     });
     const bot = createBot({
       config,
@@ -38,10 +41,10 @@ export async function startTelecodex(): Promise<void> {
       codex,
       bootstrapCode,
       logger: logger.child("bot"),
-      onAdminBound: (userId) => {
-        logger.info("telegram admin bound", { userId });
-        console.log(`telegram admin bound: ${userId}`);
-        console.log("telecodex is now ready to accept commands from this Telegram account");
+      onAdminBound: () => {
+        logger.info("telegram admin bound");
+        console.log("telegram admin binding completed");
+        console.log("telecodex is now ready to accept commands from the bound Telegram account");
       },
     });
     const botProfile = await bot.api.getMe();
@@ -92,6 +95,18 @@ export async function startTelecodex(): Promise<void> {
     instanceLock?.release();
     logger.error("telecodex startup failed", error);
     throw error;
+  }
+}
+
+function parseCodexConfigOverrides(value: string | null): CodexOptions["config"] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as NonNullable<CodexOptions["config"]>
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

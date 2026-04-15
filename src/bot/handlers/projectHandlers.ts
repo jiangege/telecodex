@@ -17,7 +17,7 @@ import {
 } from "../commandSupport.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
 
-const PROJECT_REQUIRED_MESSAGE = "当前 supergroup 还没有绑定项目。\n先执行 /project bind <绝对路径>";
+const PROJECT_REQUIRED_MESSAGE = "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.";
 type ProjectCommandContext = CommandContext<Context>;
 
 export function registerProjectHandlers(deps: BotHandlerDeps): void {
@@ -31,12 +31,12 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         await ctx.reply(formatPrivateProjectList(projects));
         return;
       }
-      await ctx.reply("请在启用了 topics 的 supergroup 中使用 /project bind。私聊只保留管理入口。");
+      await ctx.reply("Use /project bind inside a supergroup with topics enabled. Private chat is only for admin entry points.");
       return;
     }
 
     if (!isSupergroupChat(ctx)) {
-      await ctx.reply("请把 telecodex 放在启用了 forum topics 的 supergroup 中使用。");
+      await ctx.reply("Use telecodex inside a supergroup with forum topics enabled.");
       return;
     }
 
@@ -48,7 +48,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
 
     if (command === "bind") {
       if (!args) {
-        await ctx.reply("用法: /project bind <绝对路径>");
+        await ctx.reply("Usage: /project bind <absolute-path>");
         return;
       }
       try {
@@ -68,10 +68,10 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         }
         await ctx.reply(
           [
-            "项目绑定完成。",
+            "Project binding updated.",
             `project: ${project.name}`,
             `root: ${project.cwd}`,
-            "这个 supergroup 现在代表一个项目；每个 topic 对应一个 Codex thread。",
+            "This supergroup now represents one project, and each topic maps to one Codex thread.",
           ].join("\n"),
         );
       } catch (error) {
@@ -85,16 +85,16 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         ...contextLogFields(ctx),
       });
       projects.remove(String(ctx.chat.id));
-      await ctx.reply("已解除当前 supergroup 的项目绑定。");
+      await ctx.reply("Removed the project binding for this supergroup.");
       return;
     }
 
-    await ctx.reply("用法:\n/project\n/project bind <绝对路径>\n/project unbind");
+    await ctx.reply("Usage:\n/project\n/project bind <absolute-path>\n/project unbind");
   });
 
   bot.command("thread", async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await ctx.reply("thread 命令只在项目 supergroup 中使用。");
+      await ctx.reply("The thread command is only available inside project supergroups.");
       return;
     }
 
@@ -105,25 +105,25 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         if (!session) return;
         await ctx.reply(
           [
-            `当前 thread: ${session.codexThreadId ?? "待创建"}`,
+            `Current thread: ${session.codexThreadId ?? "not created"}`,
             `state: ${formatSessionRuntimeStatus(session.runtimeStatus)}`,
-            `state detail: ${session.runtimeStatusDetail ?? "无"}`,
+            `state detail: ${session.runtimeStatusDetail ?? "none"}`,
             `queue: ${store.getQueuedInputCount(session.sessionKey)}`,
             `cwd: ${session.cwd}`,
-            "在当前项目中管理 threads：",
+            "Manage threads in this project:",
             "/thread resume <threadId>",
-            "/thread new <topic 名称>",
+            "/thread new <topic-name>",
           ].join("\n"),
         );
         return;
       }
-      await ctx.reply("用法:\n/thread resume <threadId>\n/thread new <topic 名称>");
+      await ctx.reply("Usage:\n/thread resume <threadId>\n/thread new <topic-name>");
       return;
     }
 
     if (command === "resume") {
       if (!args) {
-        await ctx.reply("用法: /thread resume <threadId>");
+        await ctx.reply("Usage: /thread resume <threadId>");
         return;
       }
       await resumeThreadIntoTopic(ctx, deps, args);
@@ -134,7 +134,7 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    await ctx.reply("用法:\n/thread resume <threadId>\n/thread new <topic 名称>");
+    await ctx.reply("Usage:\n/thread resume <threadId>\n/thread new <topic-name>");
   });
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
@@ -185,11 +185,11 @@ async function resumeThreadIntoTopic(
 
   await ctx.reply(
     [
-      "已创建 topic 并绑定到已有 thread id。",
+      "Created a topic and bound it to the existing thread id.",
       `topic: ${forumTopic.name}`,
       `topic id: ${forumTopic.message_thread_id}`,
       `thread: ${threadId}`,
-      "后续消息会通过 Codex SDK 在该 thread 上继续。",
+      "Future messages in this topic will continue on that thread through the Codex SDK.",
     ].join("\n"),
   );
 
@@ -197,9 +197,9 @@ async function resumeThreadIntoTopic(
     bot,
     session,
     [
-      "这个 topic 已绑定到已有 Codex thread id。",
+      "This topic is now bound to an existing Codex thread id.",
       `thread: ${threadId}`,
-      "直接发送消息即可继续。",
+      "Send a message to continue.",
     ].join("\n"),
   );
 }
@@ -235,10 +235,10 @@ async function createFreshThreadTopic(
 
   await ctx.reply(
     [
-      "已创建新 topic。",
+      "Created a new topic.",
       `topic: ${forumTopic.name}`,
       `topic id: ${forumTopic.message_thread_id}`,
-      "首条普通消息会启动一个新的 Codex SDK thread。",
+      "Your first normal message will start a new Codex SDK thread.",
     ].join("\n"),
   );
 
@@ -246,8 +246,8 @@ async function createFreshThreadTopic(
     bot,
     session,
     [
-      "新 topic 已创建。",
-      "直接发送消息即可开始一个新的 Codex thread。",
+      "New topic created.",
+      "Send a message to start a new Codex thread.",
       `cwd: ${session.cwd}`,
       `model: ${session.model}`,
     ].join("\n"),

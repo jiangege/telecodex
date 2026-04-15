@@ -43,8 +43,14 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
       "yolo",
       "model",
       "effort",
+      "web",
+      "network",
+      "gitcheck",
+      "adddir",
+      "schema",
+      "codexconfig",
     ]),
   );
 
-  assert.deepEqual(events, [["message:forum_topic_created", "message:forum_topic_edited"], "message:text"]);
+  assert.deepEqual(events, [["message:forum_topic_created", "message:forum_topic_edited"], "message:text", ["message:photo", "message:document"]]);
 });

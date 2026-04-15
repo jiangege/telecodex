@@ -50,7 +50,7 @@ export class MessageBuffer {
       {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
-        text: "Codex 正在处理...",
+        text: "Codex is working...",
       },
       this.logger,
     );
@@ -138,7 +138,7 @@ export class MessageBuffer {
       const text = (finalMarkdown ?? state.text).trim();
       const chunks = text
         ? renderMarkdownForTelegram(text)
-        : renderPlainChunksForTelegram("Codex 已完成，但没有返回可发送的文本。");
+        : renderPlainChunksForTelegram("Codex finished, but returned no text to send.");
       await this.replaceWithChunks(state, chunks);
       this.states.delete(key);
     });
@@ -150,7 +150,7 @@ export class MessageBuffer {
     if (state.timer) clearTimeout(state.timer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
-      await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex 出错：${message}`));
+      await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex error: ${message}`));
       this.states.delete(key);
     });
   }
@@ -279,34 +279,34 @@ export class MessageBuffer {
 }
 
 function truncateForEdit(text: string): string {
-  if (text.length <= 3800) return text || "Codex 正在处理...";
+  if (text.length <= 3800) return text || "Codex is working...";
   return `${text.slice(0, 3800)}\n\n...`;
 }
 
 function composePendingText(state: BufferState): string {
-  const sections = ["Codex 正在处理..."];
+  const sections = ["Codex is working..."];
 
   if (state.planText) {
-    sections.push(`[计划]\n${state.planText}`);
+    sections.push(`[Plan]\n${state.planText}`);
   }
 
   const reasoningSummary = state.reasoningSummaryText.trim();
   if (reasoningSummary) {
-    sections.push(`[思路摘要]\n${reasoningSummary}`);
+    sections.push(`[Reasoning Summary]\n${reasoningSummary}`);
   }
 
   if (state.progressLines.length > 0) {
-    sections.push(`[过程]\n${state.progressLines.join("\n")}`);
+    sections.push(`[Progress]\n${state.progressLines.join("\n")}`);
   }
 
   const toolOutput = state.toolOutputText.trim();
   if (toolOutput) {
-    sections.push(`[工具输出]\n${toolOutput}`);
+    sections.push(`[Tool Output]\n${toolOutput}`);
   }
 
   const replyDraft = state.text.trim();
   if (replyDraft) {
-    sections.push(`[回复草稿]\n${replyDraft}`);
+    sections.push(`[Draft Reply]\n${replyDraft}`);
   }
 
   return sections.join("\n\n");

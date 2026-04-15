@@ -3,7 +3,8 @@ import {
   contextLogFields,
   getScopedSession,
 } from "../commandSupport.js";
-import { handleUserText } from "../inputService.js";
+import { handleUserInput, handleUserText } from "../inputService.js";
+import { telegramImageMessageToCodexInput } from "../../telegram/attachments.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
   const { bot, config, store, projects, codex, buffers, logger } = deps;
@@ -35,5 +36,45 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       bot,
       ...(logger ? { logger } : {}),
     });
+  });
+
+  bot.on(["message:photo", "message:document"], async (ctx) => {
+    const session = getScopedSession(ctx, store, projects, config);
+    if (!session) {
+      logger?.warn("ignored telegram attachment because no scoped session was available", {
+        ...contextLogFields(ctx),
+      });
+      return;
+    }
+
+    try {
+      const prompt = await telegramImageMessageToCodexInput({
+        bot,
+        config,
+        chatId: ctx.chat.id,
+        messageThreadId: ctx.message.message_thread_id ?? null,
+        message: ctx.message,
+      });
+      if (!prompt) {
+        await ctx.reply("Only image attachments are supported.");
+        return;
+      }
+
+      await handleUserInput({
+        prompt,
+        session,
+        store,
+        codex,
+        buffers,
+        bot,
+        ...(logger ? { logger } : {}),
+      });
+    } catch (error) {
+      logger?.warn("failed to handle telegram image attachment", {
+        ...contextLogFields(ctx),
+        error,
+      });
+      await ctx.reply(error instanceof Error ? error.message : String(error));
+    }
   });
 }

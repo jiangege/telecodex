@@ -19,7 +19,9 @@ export function authMiddleware(input: {
         hasTextMessage: Boolean(ctx.message?.text),
       });
       if (ctx.message?.text && ctx.chat?.type !== "private") {
-        await ctx.reply("这条消息是以群身份或匿名管理员身份发出的，telecodex 无法确认操作者。请切换为你的个人账号发送。");
+        await ctx.reply(
+          "This message was sent as the group identity or as an anonymous admin. telecodex cannot verify the operator. Send it from your personal account instead.",
+        );
       }
       return;
     }
@@ -37,17 +39,17 @@ export function authMiddleware(input: {
         fromId: userId,
         authorizedUserId,
       });
-      await deny(ctx, "未授权。");
+      await deny(ctx, "Unauthorized.");
       return;
     }
 
     if (!input.bootstrapCode) {
-      await deny(ctx, "机器人尚未配置鉴权。");
+      await deny(ctx, "Authentication is not configured for this bot yet.");
       return;
     }
 
     if (ctx.chat?.type !== "private") {
-      await deny(ctx, "请先私聊机器人发送管理员授权码。");
+      await deny(ctx, "Send the admin bootstrap code to the bot in a private chat first.");
       return;
     }
 
@@ -56,14 +58,14 @@ export function authMiddleware(input: {
       const claimedUserId = input.store.claimAuthorizedUserId(userId);
       if (claimedUserId === userId) {
         input.onAdminBound?.(userId);
-        await ctx.reply("管理员绑定成功。后续只有这个 Telegram 账号可以使用该机器人。");
+        await ctx.reply("Admin binding succeeded. Only this Telegram account can use this bot from now on.");
       } else {
-        await deny(ctx, "管理员已被其他账号绑定。");
+        await deny(ctx, "An admin account has already claimed this bot.");
       }
       return;
     }
 
-    await ctx.reply("该机器人尚未初始化。请发送启动日志里显示的绑定码完成一次性绑定。");
+    await ctx.reply("This bot is not initialized yet. Send the binding code shown in the startup logs to complete the one-time admin binding.");
   };
 }
 

@@ -23,6 +23,35 @@ test("listQueuedInputs returns queued items in FIFO order", () => {
       items.map((item) => item.text),
       ["first", "second"],
     );
+    assert.deepEqual(
+      items.map((item) => item.input),
+      ["first", "second"],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("queued inputs preserve structured SDK input payloads", () => {
+  const { store, cleanup } = createTestSessionStore();
+  try {
+    const session = store.getOrCreate({
+      sessionKey: "-100:79",
+      chatId: "-100",
+      messageThreadId: "79",
+      telegramTopicName: "demo",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+
+    const input = [
+      { type: "text" as const, text: "caption" },
+      { type: "local_image" as const, path: "/tmp/example.png" },
+    ];
+    const queued = store.enqueueInput(session.sessionKey, input);
+
+    assert.equal(queued.text, "caption [image: /tmp/example.png]");
+    assert.deepEqual(store.peekNextQueuedInput(session.sessionKey)?.input, input);
   } finally {
     cleanup();
   }

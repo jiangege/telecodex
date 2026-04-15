@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const LATEST_DB_SCHEMA_VERSION = 11;
+export const LATEST_DB_SCHEMA_VERSION = 12;
 
 export function openDatabase(dbPath: string): DatabaseSync {
   mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -43,6 +43,11 @@ const MIGRATIONS: Array<{ version: number; apply: (db: DatabaseSync) => void }> 
           approval_policy TEXT NOT NULL DEFAULT 'on-request',
           telegram_topic_name TEXT,
           reasoning_effort TEXT,
+          web_search_mode TEXT,
+          network_access_enabled INTEGER NOT NULL DEFAULT 1,
+          skip_git_repo_check INTEGER NOT NULL DEFAULT 1,
+          additional_directories TEXT,
+          output_schema TEXT,
           runtime_status TEXT NOT NULL DEFAULT 'idle',
           runtime_status_detail TEXT,
           runtime_status_updated_at TEXT,
@@ -57,6 +62,7 @@ const MIGRATIONS: Array<{ version: number; apply: (db: DatabaseSync) => void }> 
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_key TEXT NOT NULL,
           text TEXT NOT NULL,
+          input_json TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -248,6 +254,47 @@ const MIGRATIONS: Array<{ version: number; apply: (db: DatabaseSync) => void }> 
         CREATE INDEX IF NOT EXISTS sessions_codex_thread_id_idx
           ON sessions (codex_thread_id);
       `);
+    },
+  },
+  {
+    version: 12,
+    apply(db) {
+      ensureTableColumn(
+        db,
+        "sessions",
+        "web_search_mode",
+        "ALTER TABLE sessions ADD COLUMN web_search_mode TEXT",
+      );
+      ensureTableColumn(
+        db,
+        "sessions",
+        "network_access_enabled",
+        "ALTER TABLE sessions ADD COLUMN network_access_enabled INTEGER NOT NULL DEFAULT 1",
+      );
+      ensureTableColumn(
+        db,
+        "sessions",
+        "skip_git_repo_check",
+        "ALTER TABLE sessions ADD COLUMN skip_git_repo_check INTEGER NOT NULL DEFAULT 1",
+      );
+      ensureTableColumn(
+        db,
+        "sessions",
+        "additional_directories",
+        "ALTER TABLE sessions ADD COLUMN additional_directories TEXT",
+      );
+      ensureTableColumn(
+        db,
+        "sessions",
+        "output_schema",
+        "ALTER TABLE sessions ADD COLUMN output_schema TEXT",
+      );
+      ensureTableColumn(
+        db,
+        "queued_inputs",
+        "input_json",
+        "ALTER TABLE queued_inputs ADD COLUMN input_json TEXT",
+      );
     },
   },
 ];

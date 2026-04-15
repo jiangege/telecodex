@@ -4,10 +4,24 @@ import {
   isSessionApprovalPolicy,
   isSessionReasoningEffort,
   isSessionSandboxMode,
+  isSessionWebSearchMode,
   type SessionApprovalPolicy,
   type SessionReasoningEffort,
   type SessionSandboxMode,
+  type SessionWebSearchMode,
 } from "../config.js";
+
+export type StoredCodexInput = string | Array<StoredTextInput | StoredLocalImageInput>;
+
+export interface StoredTextInput {
+  type: "text";
+  text: string;
+}
+
+export interface StoredLocalImageInput {
+  type: "local_image";
+  path: string;
+}
 
 export interface TelegramSession {
   sessionKey: string;
@@ -20,6 +34,11 @@ export interface TelegramSession {
   sandboxMode: SessionSandboxMode;
   approvalPolicy: SessionApprovalPolicy;
   reasoningEffort: SessionReasoningEffort | null;
+  webSearchMode: SessionWebSearchMode | null;
+  networkAccessEnabled: boolean;
+  skipGitRepoCheck: boolean;
+  additionalDirectories: string[];
+  outputSchema: string | null;
   runtimeStatus: SessionRuntimeStatus;
   runtimeStatusDetail: string | null;
   runtimeStatusUpdatedAt: string;
@@ -46,6 +65,7 @@ export interface QueuedInput {
   id: number;
   sessionKey: string;
   text: string;
+  input: StoredCodexInput;
   createdAt: string;
   updatedAt: string;
 }
@@ -61,6 +81,11 @@ interface SessionRow {
   sandbox_mode?: string | null;
   approval_policy?: string | null;
   reasoning_effort?: string | null;
+  web_search_mode?: string | null;
+  network_access_enabled?: number | bigint | null;
+  skip_git_repo_check?: number | bigint | null;
+  additional_directories?: string | null;
+  output_schema?: string | null;
   runtime_status?: string | null;
   runtime_status_detail?: string | null;
   runtime_status_updated_at?: string | null;
@@ -74,6 +99,7 @@ interface QueuedInputRow {
   id: number;
   session_key: string;
   text: string;
+  input_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -200,14 +226,15 @@ export class SessionStore {
     this.db.prepare("DELETE FROM sessions WHERE session_key = ?").run(sessionKey);
   }
 
-  enqueueInput(sessionKey: string, text: string): QueuedInput {
+  enqueueInput(sessionKey: string, input: StoredCodexInput): QueuedInput {
     const now = new Date().toISOString();
+    const text = formatCodexInputPreview(input);
     const result = this.db
       .prepare(
-        `INSERT INTO queued_inputs (session_key, text, created_at, updated_at)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO queued_inputs (session_key, text, input_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(sessionKey, text, now, now) as { lastInsertRowid?: number | bigint };
+      .run(sessionKey, text, JSON.stringify(input), now, now) as { lastInsertRowid?: number | bigint };
     const id = Number(result.lastInsertRowid);
     const queued = this.getQueuedInput(id);
     if (!queued) throw new Error("Queued input insert failed");
@@ -303,6 +330,26 @@ export class SessionStore {
     this.patch(sessionKey, { reasoning_effort: reasoningEffort });
   }
 
+  setWebSearchMode(sessionKey: string, webSearchMode: SessionWebSearchMode | null): void {
+    this.patch(sessionKey, { web_search_mode: webSearchMode });
+  }
+
+  setNetworkAccessEnabled(sessionKey: string, enabled: boolean): void {
+    this.patch(sessionKey, { network_access_enabled: enabled ? 1 : 0 });
+  }
+
+  setSkipGitRepoCheck(sessionKey: string, skip: boolean): void {
+    this.patch(sessionKey, { skip_git_repo_check: skip ? 1 : 0 });
+  }
+
+  setAdditionalDirectories(sessionKey: string, directories: string[]): void {
+    this.patch(sessionKey, { additional_directories: JSON.stringify(directories) });
+  }
+
+  setOutputSchema(sessionKey: string, outputSchema: string | null): void {
+    this.patch(sessionKey, { output_schema: outputSchema });
+  }
+
   private patch(sessionKey: string, fields: Record<string, string | number | null>): void {
     const entries = Object.entries(fields);
     if (entries.length === 0) return;
@@ -329,6 +376,11 @@ function mapSessionRow(row: SessionRow): TelegramSession {
     sandboxMode: normalizeSandboxMode(row.sandbox_mode),
     approvalPolicy: normalizeApprovalPolicy(row.approval_policy),
     reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
+    webSearchMode: normalizeWebSearchMode(row.web_search_mode),
+    networkAccessEnabled: normalizeBoolean(row.network_access_enabled, true),
+    skipGitRepoCheck: normalizeBoolean(row.skip_git_repo_check, true),
+    additionalDirectories: normalizeStringArray(row.additional_directories),
+    outputSchema: normalizeOutputSchema(row.output_schema),
     runtimeStatus: normalizeRuntimeStatus(row.runtime_status, row.active_turn_id),
     runtimeStatusDetail: row.runtime_status_detail ?? null,
     runtimeStatusUpdatedAt: row.runtime_status_updated_at ?? row.updated_at,
@@ -344,6 +396,7 @@ function mapQueuedInputRow(row: QueuedInputRow): QueuedInput {
     id: row.id,
     sessionKey: row.session_key,
     text: row.text,
+    input: parseStoredCodexInput(row.input_json, row.text),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -361,6 +414,36 @@ function normalizeReasoningEffort(value: string | null | undefined): SessionReas
   return value && isSessionReasoningEffort(value) ? value : null;
 }
 
+function normalizeWebSearchMode(value: string | null | undefined): SessionWebSearchMode | null {
+  return value && isSessionWebSearchMode(value) ? value : null;
+}
+
+function normalizeBoolean(value: number | bigint | null | undefined, fallback: boolean): boolean {
+  if (value == null) return fallback;
+  return Number(value) !== 0;
+}
+
+function normalizeStringArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeOutputSchema(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isPlainObject(parsed) ? JSON.stringify(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRuntimeStatus(value: string | null | undefined, activeTurnId: string | null): SessionRuntimeStatus {
   switch (value) {
     case "idle":
@@ -371,4 +454,41 @@ function normalizeRuntimeStatus(value: string | null | undefined, activeTurnId: 
     default:
       return activeTurnId ? "running" : "idle";
   }
+}
+
+function parseStoredCodexInput(inputJson: string | null | undefined, fallbackText: string): StoredCodexInput {
+  if (!inputJson) return fallbackText;
+  try {
+    const parsed = JSON.parse(inputJson) as unknown;
+    return normalizeStoredCodexInput(parsed) ?? fallbackText;
+  } catch {
+    return fallbackText;
+  }
+}
+
+function normalizeStoredCodexInput(value: unknown): StoredCodexInput | null {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return null;
+  const items: Array<StoredTextInput | StoredLocalImageInput> = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) return null;
+    if (item.type === "text" && typeof item.text === "string") {
+      items.push({ type: "text", text: item.text });
+    } else if (item.type === "local_image" && typeof item.path === "string") {
+      items.push({ type: "local_image", path: item.path });
+    } else {
+      return null;
+    }
+  }
+  return items;
+}
+
+export function formatCodexInputPreview(input: StoredCodexInput): string {
+  if (typeof input === "string") return input;
+  const parts = input.map((item) => (item.type === "text" ? item.text : `[image: ${item.path}]`));
+  return parts.join(" ").trim() || "[image]";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
