@@ -12,6 +12,29 @@ import { renderMarkdownForTelegram, renderPlainChunksForTelegram, renderPlainFor
 
 const DEFAULT_ACTIVITY_PULSE_INTERVAL_MS = 4_000;
 const DEFAULT_ACTIVITY_IDLE_MS = 60_000;
+type MessageBufferTimer = unknown;
+
+export interface MessageBufferScheduler {
+  now: () => number;
+  setTimeout: (callback: () => void, ms: number) => MessageBufferTimer;
+  clearTimeout: (timer: MessageBufferTimer) => void;
+  setInterval: (callback: () => void, ms: number) => MessageBufferTimer;
+  clearInterval: (timer: MessageBufferTimer) => void;
+}
+
+export interface MessageBufferOptions {
+  activityPulseIntervalMs?: number;
+  activityIdleMs?: number;
+  scheduler?: MessageBufferScheduler;
+}
+
+const defaultScheduler: MessageBufferScheduler = {
+  now: () => Date.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  setInterval: (callback, ms) => setInterval(callback, ms),
+  clearInterval: (timer) => clearInterval(timer as ReturnType<typeof setInterval>),
+};
 
 interface BufferState {
   chatId: number;
@@ -23,8 +46,8 @@ interface BufferState {
   planText: string;
   reasoningSummaryText: string;
   toolOutputText: string;
-  timer: NodeJS.Timeout | null;
-  activityTimer: NodeJS.Timeout | null;
+  timer: MessageBufferTimer | null;
+  activityTimer: MessageBufferTimer | null;
   activityInFlight: boolean;
   lastActivityAt: number;
   lastSentText: string;
@@ -35,24 +58,23 @@ export class MessageBuffer {
   private readonly states = new Map<string, BufferState>();
   private readonly activityPulseIntervalMs: number;
   private readonly activityIdleMs: number;
+  private readonly scheduler: MessageBufferScheduler;
 
   constructor(
     private readonly bot: Bot,
     private readonly updateIntervalMs: number,
     private readonly logger?: Logger,
-    input?: {
-      activityPulseIntervalMs?: number;
-      activityIdleMs?: number;
-    },
+    input?: MessageBufferOptions,
   ) {
     this.activityPulseIntervalMs = input?.activityPulseIntervalMs ?? DEFAULT_ACTIVITY_PULSE_INTERVAL_MS;
     this.activityIdleMs = input?.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
+    this.scheduler = input?.scheduler ?? defaultScheduler;
   }
 
   async create(key: string, input: { chatId: number; messageThreadId: number | null }): Promise<number> {
     const previous = this.states.get(key);
     if (previous) {
-      if (previous.timer) clearTimeout(previous.timer);
+      if (previous.timer) this.scheduler.clearTimeout(previous.timer);
       this.stopActivityPulse(previous);
       this.states.delete(key);
     }
@@ -79,7 +101,7 @@ export class MessageBuffer {
       timer: null,
       activityTimer: null,
       activityInFlight: false,
-      lastActivityAt: Date.now(),
+      lastActivityAt: this.scheduler.now(),
       lastSentText: "",
       queue: Promise.resolve(),
     };
@@ -160,7 +182,7 @@ export class MessageBuffer {
   dispose(): void {
     for (const state of this.states.values()) {
       if (state.timer) {
-        clearTimeout(state.timer);
+        this.scheduler.clearTimeout(state.timer);
         state.timer = null;
       }
       this.stopActivityPulse(state);
@@ -171,7 +193,7 @@ export class MessageBuffer {
   async complete(key: string, finalMarkdown?: string): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
-    if (state.timer) clearTimeout(state.timer);
+    if (state.timer) this.scheduler.clearTimeout(state.timer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
@@ -186,7 +208,7 @@ export class MessageBuffer {
   async fail(key: string, message: string): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
-    if (state.timer) clearTimeout(state.timer);
+    if (state.timer) this.scheduler.clearTimeout(state.timer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex error: ${message}`));
@@ -208,7 +230,7 @@ export class MessageBuffer {
 
   private scheduleFlush(key: string, state: BufferState): void {
     if (state.timer) return;
-    state.timer = setTimeout(() => {
+    state.timer = this.scheduler.setTimeout(() => {
       state.timer = null;
       void this.flush(key);
     }, this.updateIntervalMs);
@@ -255,21 +277,21 @@ export class MessageBuffer {
   private startActivityPulse(state: BufferState): void {
     if (state.activityTimer) return;
     void this.sendActivityPulse(state);
-    const timer = setInterval(() => {
+    const timer = this.scheduler.setInterval(() => {
       void this.sendActivityPulse(state);
     }, this.activityPulseIntervalMs);
-    timer.unref?.();
+    maybeUnref(timer);
     state.activityTimer = timer;
   }
 
   private stopActivityPulse(state: BufferState): void {
     if (!state.activityTimer) return;
-    clearInterval(state.activityTimer);
+    this.scheduler.clearInterval(state.activityTimer);
     state.activityTimer = null;
   }
 
   private async sendActivityPulse(state: BufferState): Promise<void> {
-    if (Date.now() - state.lastActivityAt >= this.activityIdleMs) {
+    if (this.scheduler.now() - state.lastActivityAt >= this.activityIdleMs) {
       this.stopActivityPulse(state);
       return;
     }
@@ -296,7 +318,7 @@ export class MessageBuffer {
   }
 
   private touchActivity(state: BufferState): void {
-    state.lastActivityAt = Date.now();
+    state.lastActivityAt = this.scheduler.now();
     if (!state.activityTimer) {
       this.startActivityPulse(state);
     }
@@ -326,6 +348,14 @@ export class MessageBuffer {
     const run = state.queue.then(work, work);
     state.queue = run.catch(() => undefined);
     await run;
+  }
+}
+
+function maybeUnref(timer: MessageBufferTimer): void {
+  if (typeof timer !== "object" || timer == null || !("unref" in timer)) return;
+  const unref = (timer as { unref?: unknown }).unref;
+  if (typeof unref === "function") {
+    unref.call(timer);
   }
 }
 

@@ -25,35 +25,46 @@ interface TelegramImageMessage {
   document?: TelegramDocument;
 }
 
+export interface TelegramAttachmentIo {
+  getFile: (input: { bot: Bot; fileId: string }) => Promise<{ file_path?: string }>;
+  fetchBytes: (url: string) => Promise<Uint8Array>;
+  saveBytes: (input: {
+    chatId: number;
+    messageThreadId: number | null;
+    source: { fileName?: string; mimeType?: string };
+    filePath: string;
+    bytes: Uint8Array;
+  }) => Promise<string>;
+}
+
 export async function telegramImageMessageToCodexInput(input: {
   bot: Bot;
   config: AppConfig;
   chatId: number;
   messageThreadId: number | null;
   message: TelegramImageMessage;
-}): Promise<StoredCodexInput | null> {
+}, io?: Partial<TelegramAttachmentIo>): Promise<StoredCodexInput | null> {
   const source = selectImageSource(input.message);
   if (!source) return null;
+  const attachmentIo = resolveAttachmentIo(io);
 
-  const file = await input.bot.api.getFile(source.fileId);
+  const file = await attachmentIo.getFile({
+    bot: input.bot,
+    fileId: source.fileId,
+  });
   if (!file.file_path) {
     throw new Error("Telegram did not return a downloadable file_path.");
   }
 
   const url = `https://api.telegram.org/file/bot${input.config.telegramBotToken}/${file.file_path}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download the Telegram image: HTTP ${response.status}`);
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const directory = path.join(getAppHome(), "attachments");
-  await mkdir(directory, { recursive: true });
-  const localPath = path.join(
-    directory,
-    `${input.chatId}-${input.messageThreadId ?? "root"}-${Date.now()}-${randomUUID()}${extensionFor(source, file.file_path)}`,
-  );
-  await writeFile(localPath, bytes);
+  const bytes = await attachmentIo.fetchBytes(url);
+  const localPath = await attachmentIo.saveBytes({
+    chatId: input.chatId,
+    messageThreadId: input.messageThreadId,
+    source,
+    filePath: file.file_path,
+    bytes,
+  });
 
   const caption = input.message.caption?.trim();
   return [
@@ -66,6 +77,43 @@ export async function telegramImageMessageToCodexInput(input: {
       path: localPath,
     },
   ];
+}
+
+function resolveAttachmentIo(io?: Partial<TelegramAttachmentIo>): TelegramAttachmentIo {
+  return {
+    getFile: io?.getFile ?? defaultGetFile,
+    fetchBytes: io?.fetchBytes ?? defaultFetchBytes,
+    saveBytes: io?.saveBytes ?? defaultSaveBytes,
+  };
+}
+
+async function defaultGetFile(input: { bot: Bot; fileId: string }): Promise<{ file_path?: string }> {
+  return input.bot.api.getFile(input.fileId);
+}
+
+async function defaultFetchBytes(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download the Telegram image: HTTP ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function defaultSaveBytes(input: {
+  chatId: number;
+  messageThreadId: number | null;
+  source: { fileName?: string; mimeType?: string };
+  filePath: string;
+  bytes: Uint8Array;
+}): Promise<string> {
+  const directory = path.join(getAppHome(), "attachments");
+  await mkdir(directory, { recursive: true });
+  const localPath = path.join(
+    directory,
+    `${input.chatId}-${input.messageThreadId ?? "root"}-${Date.now()}-${randomUUID()}${extensionFor(input.source, input.filePath)}`,
+  );
+  await writeFile(localPath, Buffer.from(input.bytes));
+  return localPath;
 }
 
 function selectImageSource(message: TelegramImageMessage): { fileId: string; fileName?: string; mimeType?: string } | null {

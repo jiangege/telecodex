@@ -91,6 +91,37 @@ test("wireBot syncs Telegram command menus for private chats and groups", async 
   }
 });
 
+test("wireBot can defer startup initialization until explicitly requested", async () => {
+  const { store, projects, cleanup } = createTestStores();
+  const { bot, botCommands } = createFakeHandlerBot();
+  const threadCatalog = createFakeThreadCatalog();
+
+  try {
+    const wired = wireBot({
+      bot,
+      config: createConfig(),
+      store,
+      projects,
+      codex: {
+        isRunning: () => false,
+      } as never,
+      threadCatalog,
+      bootstrapCode: null,
+      logger: createNoopLogger(),
+      autoInitialize: false,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(botCommands.length, 0);
+
+    await wired.initializeRuntime();
+    await waitFor(() => botCommands.length === 2);
+    assert.equal(botCommands.length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

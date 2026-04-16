@@ -5,7 +5,8 @@ import type { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import type { Logger } from "../runtime/logger.js";
 import type { ProjectStore } from "../store/projects.js";
 import type { SessionStore } from "../store/sessions.js";
-import { MessageBuffer } from "../telegram/messageBuffer.js";
+import type { TelegramAttachmentIo } from "../telegram/attachments.js";
+import { MessageBuffer, type MessageBufferOptions } from "../telegram/messageBuffer.js";
 import { authMiddleware } from "./auth.js";
 import { recoverActiveTopicSessions } from "./inputService.js";
 import { registerHandlers } from "./registerHandlers.js";
@@ -23,12 +24,22 @@ export function wireBot(input: {
   bootstrapCode: string | null;
   logger?: Logger;
   onAdminBound?: (userId: number) => void;
+  attachmentIo?: Partial<TelegramAttachmentIo>;
+  bufferOptions?: MessageBufferOptions;
+  autoInitialize?: boolean;
 }): {
   bot: Bot;
   buffers: MessageBuffer;
+  initializeRuntime: () => Promise<void>;
+  initializationPromise: Promise<void> | null;
 } {
   const { bot, config, store, projects, codex, threadCatalog, bootstrapCode, logger, onAdminBound } = input;
-  const buffers = new MessageBuffer(bot, config.updateIntervalMs, logger?.child("message-buffer"));
+  const buffers = new MessageBuffer(
+    bot,
+    config.updateIntervalMs,
+    logger?.child("message-buffer"),
+    input.bufferOptions,
+  );
 
   bot.use(
     authMiddleware({
@@ -56,29 +67,42 @@ export function wireBot(input: {
     config,
     store,
     projects,
-    codex,
-    threadCatalog,
-    buffers,
-    ...(logger ? { logger } : {}),
-  });
-
-  void (async () => {
-    try {
-      await syncBotCommands(bot, logger);
-      await cleanupMissingTopicBindings({
-        bot,
-        store,
-        ...(logger ? { logger: logger.child("topic-cleanup") } : {}),
-      });
-      await recoverActiveTopicSessions(store, codex, buffers, bot, logger);
-    } catch (error) {
-      logger?.error("startup topic reconciliation failed", error);
+      codex,
+      threadCatalog,
+      buffers,
+      ...(input.attachmentIo ? { attachmentIo: input.attachmentIo } : {}),
+      ...(logger ? { logger } : {}),
+    });
+  let initializationPromise: Promise<void> | null = null;
+  const initializeRuntime = (): Promise<void> => {
+    if (initializationPromise) {
+      return initializationPromise;
     }
-  })();
+    initializationPromise = (async () => {
+      try {
+        await syncBotCommands(bot, logger);
+        await cleanupMissingTopicBindings({
+          bot,
+          store,
+          ...(logger ? { logger: logger.child("topic-cleanup") } : {}),
+        });
+        await recoverActiveTopicSessions(store, codex, buffers, bot, logger);
+      } catch (error) {
+        logger?.error("startup topic reconciliation failed", error);
+      }
+    })();
+    return initializationPromise;
+  };
+
+  if (input.autoInitialize !== false) {
+    void initializeRuntime();
+  }
 
   return {
     bot,
     buffers,
+    initializeRuntime,
+    initializationPromise,
   };
 }
 

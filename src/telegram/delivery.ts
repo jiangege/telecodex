@@ -17,10 +17,19 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   "EAI_AGAIN",
 ]);
 
+export interface TelegramDeliveryRuntime {
+  sleep: (ms: number) => Promise<void>;
+}
+
+const defaultDeliveryRuntime: TelegramDeliveryRuntime = {
+  sleep,
+};
+
 export async function sendHtmlMessage(
   bot: Bot,
   input: { chatId: number; messageThreadId: number | null; text: string },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<{ message_id: number }> {
   return retryTelegramCall(
     bot.api,
@@ -36,6 +45,9 @@ export async function sendHtmlMessage(
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
     },
+    {
+      runtime,
+    },
   );
 }
 
@@ -43,10 +55,11 @@ export async function sendHtmlChunks(
   bot: Bot,
   input: { chatId: number; messageThreadId: number | null; text: string },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<Array<{ message_id: number }>> {
   const messages: Array<{ message_id: number }> = [];
   for (const chunk of splitTelegramHtml(input.text)) {
-    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger));
+    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger, runtime));
   }
   return messages;
 }
@@ -55,10 +68,11 @@ export async function sendPlainChunks(
   bot: Bot,
   input: { chatId: number; messageThreadId: number | null; text: string },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<Array<{ message_id: number }>> {
   const messages: Array<{ message_id: number }> = [];
   for (const chunk of renderPlainChunksForTelegram(input.text)) {
-    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger));
+    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger, runtime));
   }
   return messages;
 }
@@ -67,6 +81,7 @@ export async function sendTypingAction(
   bot: Bot,
   input: { chatId: number; messageThreadId: number | null },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<void> {
   await retryTelegramCall(
     bot.api,
@@ -82,6 +97,7 @@ export async function sendTypingAction(
     },
     {
       allowNetworkRetry: true,
+      runtime,
     },
   );
 }
@@ -95,6 +111,7 @@ export async function replaceOrSendHtmlChunks(
     chunks: string[];
   },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<number | null> {
   const [first, ...rest] = input.chunks;
   let firstMessageId = input.messageId;
@@ -111,6 +128,7 @@ export async function replaceOrSendHtmlChunks(
             text: first,
           },
           logger,
+          runtime,
         );
         firstDelivered = true;
       } catch (error) {
@@ -136,6 +154,7 @@ export async function replaceOrSendHtmlChunks(
           text: first,
         },
         logger,
+        runtime,
       );
       firstMessageId = message.message_id;
     }
@@ -150,6 +169,7 @@ export async function replaceOrSendHtmlChunks(
         text: chunk,
       },
       logger,
+      runtime,
     );
   }
 
@@ -160,6 +180,7 @@ export async function editHtmlMessage(
   bot: Bot,
   input: { chatId: number; messageId: number; text: string },
   logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<void> {
   await retryTelegramCall(
     bot.api,
@@ -176,6 +197,7 @@ export async function editHtmlMessage(
     },
     {
       allowNetworkRetry: true,
+      runtime,
     },
   );
 }
@@ -280,6 +302,7 @@ export async function retryTelegramCall<T>(
   context: Record<string, number | null>,
   options?: {
     allowNetworkRetry?: boolean;
+    runtime?: TelegramDeliveryRuntime;
   },
 ): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
@@ -307,7 +330,7 @@ export async function retryTelegramCall<T>(
         retryDelayMs: retry.delayMs,
         error,
       });
-      await applyTelegramCooldown(cooldownKey, retry.delayMs);
+      await applyTelegramCooldown(cooldownKey, retry.delayMs, options?.runtime ?? defaultDeliveryRuntime);
     }
   }
 }
@@ -320,12 +343,16 @@ async function waitForTelegramCooldown(cooldownKey: object): Promise<void> {
   }
 }
 
-async function applyTelegramCooldown(cooldownKey: object, delayMs: number): Promise<void> {
+async function applyTelegramCooldown(
+  cooldownKey: object,
+  delayMs: number,
+  runtime: TelegramDeliveryRuntime,
+): Promise<void> {
   const state = getTelegramCooldownState(cooldownKey);
   const previous = state.cooldown;
   const baseCooldown = previous
-    ? previous.then(() => sleep(delayMs))
-    : sleep(delayMs);
+    ? previous.then(() => runtime.sleep(delayMs))
+    : runtime.sleep(delayMs);
   const cooldown = baseCooldown.finally(() => {
     if (state.cooldown === cooldown) {
       state.cooldown = null;

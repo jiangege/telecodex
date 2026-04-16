@@ -9,7 +9,7 @@ import { replyError, replyNotice } from "../../telegram/formatted.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, codex, buffers, logger } = deps;
+  const { bot, config, store, projects, codex, buffers, attachmentIo, logger } = deps;
 
   bot.on("message:text", wrapUserFacingHandler("message:text", logger, async (ctx) => {
     const text = ctx.message.text;
@@ -56,7 +56,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
         chatId: ctx.chat.id,
         messageThreadId: ctx.message.message_thread_id ?? null,
         message: ctx.message,
-      });
+      }, attachmentIo);
       if (!prompt) {
         await replyNotice(ctx, "Only image attachments are supported.");
         return;

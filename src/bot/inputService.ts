@@ -11,6 +11,7 @@ import type {
 } from "@openai/codex-sdk";
 import type { Logger } from "../runtime/logger.js";
 import { applySessionRuntimeEvent } from "../runtime/sessionRuntime.js";
+import { formatCodexErrorForUser } from "../codex/errorFormatting.js";
 import { type SessionStore, type StoredCodexInput, type TelegramSession } from "../store/sessions.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { sendReplyNotice } from "../telegram/formatted.js";
@@ -327,6 +328,9 @@ async function runSessionPrompt(input: {
     });
     await buffers.complete(bufferKey, result.finalResponse || undefined);
   } catch (error) {
+    const userFacingMessage = isAbortError(error)
+      ? "Current run interrupted."
+      : formatCodexErrorForUser(error);
     const latest = store.get(sessionKey);
     if (latest) {
       store.setOutputMessage(sessionKey, null);
@@ -340,7 +344,7 @@ async function runSessionPrompt(input: {
           }
           : {
             type: "turn.failed",
-            message: error instanceof Error ? error.message : String(error),
+            message: userFacingMessage,
           },
         logger,
       });
@@ -350,11 +354,7 @@ async function runSessionPrompt(input: {
       sessionKey,
       error,
     });
-    if (isAbortError(error)) {
-      await buffers.fail(bufferKey, "Current run interrupted.");
-    } else {
-      await buffers.fail(bufferKey, error instanceof Error ? error.message : String(error));
-    }
+    await buffers.fail(bufferKey, userFacingMessage);
   } finally {
     await processNextQueuedInputForSession(sessionKey, store, codex, buffers, bot, logger);
   }
