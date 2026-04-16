@@ -67,20 +67,20 @@ Inside a Telegram forum supergroup:
 /project bind /absolute/path/to/project
 ```
 
-2. Create a fresh topic for a new Codex thread:
+2. Create or open a Telegram topic manually.
 
 ```text
-/thread new My Task
+My Task
 ```
 
-3. Or resume an existing thread:
+3. Send normal messages in that topic to start or continue work with Codex.
+
+4. Or bind the current topic to an existing saved thread:
 
 ```text
 /thread list
 /thread resume <threadId>
 ```
-
-4. Send normal messages in the topic to work with Codex.
 
 ## Commands
 
@@ -106,8 +106,8 @@ Inside a Telegram forum supergroup:
 
 - `/thread` - show the current attached thread id in a topic
 - `/thread list` - list saved Codex threads for the current project
-- `/thread new <topic-name>` - create a fresh topic for a new thread
-- `/thread resume <threadId>` - create a topic and bind it to an existing thread
+- `/thread new` - reset the current topic so the next message starts a fresh thread
+- `/thread resume <threadId>` - bind the current topic to an existing thread
 
 ### Session Configuration
 
@@ -148,4 +148,3 @@ the JSON state files and then removes the old SQLite files.
 - If startup reports a login problem, run `codex login`.
 - If the bot appears idle for a long time, check `/status`.
 - If you need logs, inspect `~/.telecodex/logs/telecodex.log`.
-

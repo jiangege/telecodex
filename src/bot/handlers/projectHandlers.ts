@@ -6,17 +6,16 @@ import {
   ensureTopicSession,
   formatPrivateProjectList,
   formatProjectStatus,
-  formatTopicName,
   getProjectForContext,
   hasTopicContext,
   isPrivateChat,
   isSupergroupChat,
   parseSubcommand,
-  postTopicReadyMessage,
   requireScopedSession,
   resolveExistingDirectory,
 } from "../commandSupport.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
+import { isSessionBusy } from "../sessionFlow.js";
 import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
@@ -115,11 +114,17 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
             textField("queue", store.getQueuedInputCount(session.sessionKey)),
             codeField("cwd", session.cwd),
           ],
-          footer: ["Manage threads in this project:", "/thread list", "/thread resume <threadId>", "/thread new <topic-name>"],
+          footer: ["Manage threads in this project:", "/thread list", "/thread new", "/thread resume <threadId>"],
         });
         return;
       }
-      await replyUsage(ctx, ["/thread list", "/thread resume <threadId>", "/thread new <topic-name>"]);
+      await replyNotice(
+        ctx,
+        [
+          "Use /thread list in the root chat.",
+          "Create or open a Telegram forum topic, then use /thread new or /thread resume <threadId> inside that topic.",
+        ].join("\n"),
+      );
       return;
     }
 
@@ -132,15 +137,27 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
         await replyUsage(ctx, "/thread resume <threadId>");
         return;
       }
-      await resumeThreadIntoTopic(ctx, deps, args);
+      if (!hasTopicContext(ctx)) {
+        await replyNotice(ctx, "Create or open a Telegram forum topic, then run /thread resume <threadId> inside that topic.");
+        return;
+      }
+      await resumeThreadInCurrentTopic(ctx, deps, args);
       return;
     }
     if (command === "new") {
-      await createFreshThreadTopic(ctx, deps, args);
+      if (args) {
+        await replyUsage(ctx, "/thread new");
+        return;
+      }
+      if (!hasTopicContext(ctx)) {
+        await replyNotice(ctx, "Create or open a Telegram forum topic, then run /thread new inside that topic.");
+        return;
+      }
+      await startFreshThreadInCurrentTopic(ctx, deps);
       return;
     }
 
-    await replyUsage(ctx, ["/thread list", "/thread resume <threadId>", "/thread new <topic-name>"]);
+    await replyUsage(ctx, ["/thread list", "/thread new", "/thread resume <threadId>"]);
   }));
 
   bot.on(["message:forum_topic_created", "message:forum_topic_edited"], async (ctx) => {
@@ -158,17 +175,22 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
   });
 }
 
-async function resumeThreadIntoTopic(
+async function resumeThreadInCurrentTopic(
   ctx: ProjectCommandContext,
   deps: BotHandlerDeps,
   threadId: string,
 ): Promise<void> {
-  const { bot, config, store, projects, logger, threadCatalog } = deps;
+  const { config, store, projects, logger, threadCatalog } = deps;
   const project = getProjectForContext(ctx, projects);
   if (!project) {
     await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
     return;
   }
+
+  const session = await requireScopedSession(ctx, store, projects, config);
+  if (!session) return;
+  const latest = await requireIdleThreadMutationTarget(ctx, deps, session);
+  if (!latest) return;
 
   const thread = await threadCatalog.findProjectThreadById({
     projectRoot: project.cwd,
@@ -186,95 +208,65 @@ async function resumeThreadIntoTopic(
     return;
   }
 
-  const topicName = formatTopicName(thread.preview, `Resumed ${thread.id.slice(0, 8)}`);
-  const forumTopic = await bot.api.createForumTopic(ctx.chat.id, topicName);
-  const session = ensureTopicSession({
-    store,
-    config,
-    project,
-    chatId: ctx.chat.id,
-    messageThreadId: forumTopic.message_thread_id,
-    topicName: forumTopic.name,
-    threadId: thread.id,
-  });
-
-  logger?.info("thread id bound into topic", {
-    ...contextLogFields(ctx),
-    sessionKey: session.sessionKey,
-    threadId: thread.id,
-    topicName: forumTopic.name,
-  });
-
-  await replyDocument(ctx, {
-    title: "Created a topic and bound it to the existing thread id.",
-    fields: [
-      textField("topic", forumTopic.name),
-      textField("topic id", forumTopic.message_thread_id),
-      codeField("thread", thread.id),
-      codeField("cwd", thread.cwd),
-    ],
-    footer: "Future messages in this topic will continue on that thread through the Codex SDK.",
-  });
-
-  await postTopicReadyMessage(
-    bot,
-    session,
-    [
-      "This topic is now bound to an existing Codex thread id.",
-      `thread: ${thread.id}`,
-      "Send a message to continue.",
-    ].join("\n"),
-  );
-}
-
-async function createFreshThreadTopic(
-  ctx: ProjectCommandContext,
-  deps: BotHandlerDeps,
-  requestedName: string,
-): Promise<void> {
-  const { bot, config, store, projects, logger } = deps;
-  const project = getProjectForContext(ctx, projects);
-  if (!project) {
-    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
+  if (latest.codexThreadId === thread.id) {
+    await replyNotice(ctx, "This topic is already bound to that Codex thread.");
     return;
   }
 
-  const topicName = formatTopicName(requestedName, "New Thread");
-  const forumTopic = await bot.api.createForumTopic(ctx.chat.id, topicName);
-  const session = ensureTopicSession({
-    store,
-    config,
-    project,
-    chatId: ctx.chat.id,
-    messageThreadId: forumTopic.message_thread_id,
-    topicName: forumTopic.name,
-  });
+  store.bindThread(latest.sessionKey, thread.id);
+  resetTopicSessionState(store, latest.sessionKey);
+  const updated = store.get(latest.sessionKey) ?? latest;
 
-  logger?.info("new thread topic created", {
+  logger?.info("thread id bound into current topic", {
     ...contextLogFields(ctx),
-    sessionKey: session.sessionKey,
-    topicName: forumTopic.name,
+    sessionKey: updated.sessionKey,
+    threadId: thread.id,
+    topicName: updated.telegramTopicName,
   });
 
   await replyDocument(ctx, {
-    title: "Created a new topic.",
+    title: "Current topic is now bound to the existing thread id.",
     fields: [
-      textField("topic", forumTopic.name),
-      textField("topic id", forumTopic.message_thread_id),
+      textField("topic", updated.telegramTopicName ?? "current topic"),
+      textField("topic id", updated.messageThreadId ?? "unknown"),
+      codeField("thread", thread.id),
+      codeField("cwd", updated.cwd),
     ],
-    footer: "Your first normal message will start a new Codex SDK thread.",
+    footer: "Future messages in this topic will continue on that thread through the Codex SDK.",
+  });
+}
+
+async function startFreshThreadInCurrentTopic(
+  ctx: ProjectCommandContext,
+  deps: BotHandlerDeps,
+): Promise<void> {
+  const { config, store, projects, logger } = deps;
+  const session = await requireScopedSession(ctx, store, projects, config);
+  if (!session) return;
+  const latest = await requireIdleThreadMutationTarget(ctx, deps, session);
+  if (!latest) return;
+
+  store.bindThread(latest.sessionKey, null);
+  resetTopicSessionState(store, latest.sessionKey);
+  const updated = store.get(latest.sessionKey) ?? latest;
+
+  logger?.info("current topic reset to a new codex thread", {
+    ...contextLogFields(ctx),
+    sessionKey: updated.sessionKey,
+    previousThreadId: latest.codexThreadId,
+    topicName: updated.telegramTopicName,
   });
 
-  await postTopicReadyMessage(
-    bot,
-    session,
-    [
-      "New topic created.",
-      "Send a message to start a new Codex thread.",
-      `cwd: ${session.cwd}`,
-      `model: ${session.model}`,
-    ].join("\n"),
-  );
+  await replyDocument(ctx, {
+    title: "Current topic is ready for a new thread.",
+    fields: [
+      textField("topic", updated.telegramTopicName ?? "current topic"),
+      textField("topic id", updated.messageThreadId ?? "unknown"),
+      codeField("thread", "not created"),
+      codeField("cwd", updated.cwd),
+    ],
+    footer: "Your next normal message in this topic will start a new Codex thread.",
+  });
 }
 
 async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDeps): Promise<void> {
@@ -321,5 +313,33 @@ async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDe
       };
     }),
     footer: "Copy an id or resume command from the code-formatted fields above.",
+  });
+}
+
+async function requireIdleThreadMutationTarget(
+  ctx: ProjectCommandContext,
+  deps: BotHandlerDeps,
+  session: ReturnType<typeof ensureTopicSession>,
+): Promise<ReturnType<typeof ensureTopicSession> | null> {
+  const { store, codex } = deps;
+  const latest = store.get(session.sessionKey) ?? session;
+  if (isSessionBusy(latest) || codex.isRunning(latest.sessionKey)) {
+    await replyNotice(ctx, "Stop the current run before changing the thread binding for this topic.");
+    return null;
+  }
+  const queueDepth = store.getQueuedInputCount(latest.sessionKey);
+  if (queueDepth > 0) {
+    await replyNotice(ctx, `Clear ${queueDepth} queued message(s) before changing the thread binding for this topic.`);
+    return null;
+  }
+  return latest;
+}
+
+function resetTopicSessionState(store: BotHandlerDeps["store"], sessionKey: string): void {
+  store.setOutputMessage(sessionKey, null);
+  store.setRuntimeState(sessionKey, {
+    status: "idle",
+    detail: null,
+    updatedAt: new Date().toISOString(),
   });
 }

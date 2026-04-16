@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GrammyError } from "grammy";
 import { registerHandlers } from "../bot/registerHandlers.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createTestStores } from "./helpers.js";
 
@@ -18,6 +17,9 @@ function createDeps() {
   const { bot, api, commands, createdTopics, sent } = createFakeHandlerBot();
   const stores = createTestStores();
   const threadCatalog = createFakeThreadCatalog();
+  const codex = {
+    isRunning: () => false,
+  };
   return {
     ...stores,
     bot,
@@ -26,20 +28,30 @@ function createDeps() {
     createdTopics,
     sent,
     threadCatalog,
+    codex,
   };
 }
 
-test("/thread new creates a fresh topic session and posts a ready message", async () => {
-  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog } = createDeps();
+test("/thread new resets the current topic to start a fresh thread", async () => {
+  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    const session = store.getOrCreate({
+      sessionKey: "-100:51",
+      chatId: "-100",
+      messageThreadId: "51",
+      telegramTopicName: "Research Thread",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+    store.bindThread(session.sessionKey, "thread-old");
 
     registerHandlers({
       bot,
       config: createConfig(),
       store,
       projects,
-      codex: {} as never,
+      codex: codex as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -49,33 +61,37 @@ test("/thread new creates a fresh topic session and posts a ready message", asyn
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
-      match: "new Research Thread",
+      message: { message_thread_id: 51 },
+      match: "new",
       reply: async (text: string) => {
         replies.push(text);
         return undefined;
       },
     });
 
-    assert.equal(createdTopics.length, 1);
-    assert.equal(createdTopics[0]?.name, "Research Thread");
-    const session = store.get(`-100:${createdTopics[0]!.messageThreadId}`);
-    assert.ok(session);
-    assert.equal(session?.codexThreadId, null);
-    assert.equal(session?.cwd, process.cwd());
-    const readyMessage = sent.find((entry) => entry.text.includes("New topic created."));
-    assert.ok(readyMessage);
-    assert.equal(readyMessage?.options?.parse_mode, undefined);
-    assert.deepEqual(readyMessage?.options?.link_preview_options, { is_disabled: true });
-    assert.match(replies.at(-1) ?? "", /Created a new topic/);
+    assert.equal(createdTopics.length, 0);
+    assert.equal(sent.length, 0);
+    const updated = store.get(session.sessionKey);
+    assert.equal(updated?.codexThreadId, null);
+    assert.equal(updated?.runtimeStatus, "idle");
+    assert.match(replies.at(-1) ?? "", /Current topic is ready for a new thread/);
   } finally {
     cleanup();
   }
 });
 
-test("/thread resume creates a topic and binds it to a known thread id", async () => {
-  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog } = createDeps();
+test("/thread resume binds the current topic to a known thread id", async () => {
+  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    store.getOrCreate({
+      sessionKey: "-100:52",
+      chatId: "-100",
+      messageThreadId: "52",
+      telegramTopicName: "Resume Here",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
     threadCatalog.setThreads([
       {
         id: "thread-401",
@@ -94,7 +110,7 @@ test("/thread resume creates a topic and binds it to a known thread id", async (
       config: createConfig(),
       store,
       projects,
-      codex: {} as never,
+      codex: codex as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -104,6 +120,7 @@ test("/thread resume creates a topic and binds it to a known thread id", async (
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
+      message: { message_thread_id: 52 },
       match: "resume thread-401",
       reply: async (text: string) => {
         replies.push(text);
@@ -111,22 +128,19 @@ test("/thread resume creates a topic and binds it to a known thread id", async (
       },
     });
 
-    assert.equal(createdTopics.length, 1);
-    const session = store.get(`-100:${createdTopics[0]!.messageThreadId}`);
-    assert.ok(session);
-    assert.equal(session?.codexThreadId, "thread-401");
-    const readyMessage = sent.find((entry) => entry.text.includes("This topic is now bound to an existing Codex thread id."));
-    assert.ok(readyMessage);
-    assert.equal(readyMessage?.options?.parse_mode, undefined);
-    assert.deepEqual(readyMessage?.options?.link_preview_options, { is_disabled: true });
-    assert.match(replies.at(-1) ?? "", /Created a topic and bound it to the existing thread id/);
+    assert.equal(createdTopics.length, 0);
+    assert.equal(sent.length, 0);
+    const updated = store.get("-100:52");
+    assert.equal(updated?.codexThreadId, "thread-401");
+    assert.equal(updated?.runtimeStatus, "idle");
+    assert.match(replies.at(-1) ?? "", /Current topic is now bound to the existing thread id/);
   } finally {
     cleanup();
   }
 });
 
 test("/thread list shows saved project threads from the Codex session catalog", async () => {
-  const { store, projects, cleanup, bot, commands, threadCatalog } = createDeps();
+  const { store, projects, cleanup, bot, commands, threadCatalog, codex } = createDeps();
   try {
     const projectRoot = process.cwd();
     projects.upsert({ chatId: "-100", cwd: projectRoot, name: "telecodex" });
@@ -167,7 +181,7 @@ test("/thread list shows saved project threads from the Codex session catalog", 
       config: createConfig(),
       store,
       projects,
-      codex: {} as never,
+      codex: codex as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -212,30 +226,17 @@ test("/thread list shows saved project threads from the Codex session catalog", 
   }
 });
 
-test("/thread new replies with a useful error when Telegram denies topic creation", async () => {
-  const { store, projects, cleanup, bot, api, commands, createdTopics, threadCatalog } = createDeps();
+test("/thread new requires an existing topic context", async () => {
+  const { store, projects, cleanup, bot, commands, createdTopics, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
-    api.createForumTopic = async (chatId: number, name: string) => {
-      throw new GrammyError(
-        "Call to 'createForumTopic' failed!",
-        {
-          ok: false,
-          error_code: 400,
-          description: "Bad Request: not enough rights to create a topic",
-          parameters: {},
-        },
-        "createForumTopic",
-        { chat_id: chatId, name },
-      );
-    };
 
     registerHandlers({
       bot,
       config: createConfig(),
       store,
       projects,
-      codex: {} as never,
+      codex: codex as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -245,9 +246,7 @@ test("/thread new replies with a useful error when Telegram denies topic creatio
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
-      update: { update_id: 401 },
-      message: {},
-      match: "new Research Thread",
+      match: "new",
       reply: async (text: string) => {
         replies.push(text);
         return undefined;
@@ -255,27 +254,44 @@ test("/thread new replies with a useful error when Telegram denies topic creatio
     });
 
     assert.equal(createdTopics.length, 0);
-    assert.match(replies.at(-1) ?? "", /lacks permission to create topics/i);
-    assert.match(replies.at(-1) ?? "", /grant topic management/i);
+    assert.match(replies.at(-1) ?? "", /Create or open a Telegram forum topic/);
   } finally {
     cleanup();
   }
 });
 
-test("/thread list still replies when an unexpected handler error escapes", async () => {
-  const { store, projects, cleanup, bot, commands, threadCatalog } = createDeps();
+test("/thread resume refuses to change binding while queued messages exist", async () => {
+  const { store, projects, cleanup, bot, commands, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
-    threadCatalog.listProjectThreads = async () => {
-      throw new Error("catalog offline");
-    };
+    const session = store.getOrCreate({
+      sessionKey: "-100:60",
+      chatId: "-100",
+      messageThreadId: "60",
+      telegramTopicName: "Queued Topic",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+    store.enqueueInput(session.sessionKey, "queued work");
+    threadCatalog.setThreads([
+      {
+        id: "thread-queued",
+        cwd: process.cwd(),
+        createdAt: "2026-04-15T00:00:00.000Z",
+        updatedAt: "2026-04-15T01:00:00.000Z",
+        preview: "Queued thread",
+        source: "cli",
+        modelProvider: "openai",
+        sessionPath: "/tmp/thread-queued.jsonl",
+      },
+    ]);
 
     registerHandlers({
       bot,
       config: createConfig(),
       store,
       projects,
-      codex: {} as never,
+      codex: codex as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -285,16 +301,16 @@ test("/thread list still replies when an unexpected handler error escapes", asyn
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
-      update: { update_id: 402 },
-      message: {},
-      match: "list",
+      message: { message_thread_id: 60 },
+      match: "resume thread-queued",
       reply: async (text: string) => {
         replies.push(text);
         return undefined;
       },
     });
 
-    assert.match(replies.at(-1) ?? "", /catalog offline/);
+    assert.match(replies.at(-1) ?? "", /Clear 1 queued message\(s\) before changing the thread binding/);
+    assert.equal(store.get(session.sessionKey)?.codexThreadId, null);
   } finally {
     cleanup();
   }

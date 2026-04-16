@@ -148,7 +148,7 @@ class DeferredCodexRuntime {
   }
 }
 
-test("e2e topic flow creates a project topic, runs Codex, and reports status", async () => {
+test("e2e topic flow runs Codex inside an existing project topic and reports status", async () => {
   const harness = createHarness();
   const codex = new DeferredCodexRuntime();
 
@@ -166,10 +166,7 @@ test("e2e topic flow creates a project topic, runs Codex, and reports status", a
     const projectReplies = await runCommand(harness, "project", `bind ${process.cwd()}`);
     assert.match(projectReplies.at(-1) ?? "", /Project binding updated/);
 
-    const threadReplies = await runCommand(harness, "thread", "new Research");
-    assert.match(threadReplies.at(-1) ?? "", /Created a new topic/);
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 201;
 
     await runTextMessage(harness, topicId, "inspect the project");
     await waitFor(() => codex.calls.length === 1);
@@ -221,9 +218,7 @@ test("e2e topic flow queues follow-up messages and drains them after the active 
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Queue Flow");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 202;
     const sessionKey = `-100:${topicId}`;
 
     await runTextMessage(harness, topicId, "first task");
@@ -281,10 +276,9 @@ test("e2e topic flow resumes an existing thread id", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    const replies = await runCommand(harness, "thread", "resume thread-existing-777");
-    assert.match(replies.at(-1) ?? "", /Created a topic and bound it to the existing thread id/);
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 203;
+    const replies = await runCommand(harness, "thread", "resume thread-existing-777", topicId);
+    assert.match(replies.at(-1) ?? "", /Current topic is now bound to the existing thread id/);
 
     await runTextMessage(harness, topicId, "continue previous work");
     await waitFor(() => codex.calls.length === 1);
@@ -317,9 +311,7 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Interrupt Flow");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 204;
     const sessionKey = `-100:${topicId}`;
 
     await runTextMessage(harness, topicId, "long task");
@@ -360,10 +352,9 @@ test("e2e status recovers stale in-memory running state", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Stale Flow");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 205;
     const sessionKey = `-100:${topicId}`;
+    createTopicSession(harness, topicId);
     harness.store.setRuntimeState(sessionKey, {
       status: "running",
       detail: null,
@@ -397,9 +388,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Config Flow");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 206;
     const sessionKey = `-100:${topicId}`;
 
     await runCommand(harness, "mode", "write", topicId);
@@ -484,9 +473,7 @@ test("e2e queue commands drop and clear pending messages", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Queue Commands");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 207;
     const sessionKey = `-100:${topicId}`;
 
     await runTextMessage(harness, topicId, "active task");
@@ -530,10 +517,9 @@ test("e2e runs clear an invalid stored output schema and continue without it", a
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Broken Schema");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 208;
     const sessionKey = `-100:${topicId}`;
+    createTopicSession(harness, topicId);
 
     harness.store.setOutputSchema(sessionKey, "{broken-json");
 
@@ -569,9 +555,7 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    await runCommand(harness, "thread", "new Image Flow");
-    const topicId = harness.createdTopics[0]?.messageThreadId;
-    assert.ok(topicId);
+    const topicId = 209;
 
     await runImageMessage(harness, topicId, {
       caption: "inspect this image",
@@ -629,6 +613,17 @@ function createHarness() {
       stores.cleanup();
     },
   };
+}
+
+function createTopicSession(harness: ReturnType<typeof createHarness>, messageThreadId: number) {
+  return harness.store.getOrCreate({
+    sessionKey: `-100:${messageThreadId}`,
+    chatId: "-100",
+    messageThreadId: String(messageThreadId),
+    telegramTopicName: null,
+    defaultCwd: harness.config.defaultCwd,
+    defaultModel: harness.config.defaultModel,
+  });
 }
 
 async function runCommand(
