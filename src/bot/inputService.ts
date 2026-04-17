@@ -65,7 +65,7 @@ export async function handleUserInput(input: {
   logger?: Logger;
 }): Promise<HandleUserTextResult> {
   const { prompt, store, codex, buffers, bot, logger } = input;
-  const session = await refreshSessionIfActiveTurnIsStale(input.session, store, codex, bot, logger);
+  const session = await refreshSessionIfActiveTurnIsStale(input.session, store, codex, buffers, bot, logger);
 
   if (isSessionBusy(session) || codex.isRunning(session.sessionKey)) {
     await sendReplyNotice(
@@ -142,6 +142,7 @@ export async function refreshSessionIfActiveTurnIsStale(
   session: TelegramSession,
   store: SessionStore,
   codex: CodexSdkRuntime,
+  buffers: MessageBuffer,
   bot: Bot,
   logger?: Logger,
 ): Promise<TelegramSession> {
@@ -149,6 +150,15 @@ export async function refreshSessionIfActiveTurnIsStale(
   if (!isSessionBusy(latest)) return latest;
   if (codex.isRunning(latest.sessionKey)) return latest;
 
+  await buffers.complete(
+    sessionBufferKey(latest.sessionKey),
+    "The previous run was lost. Send the message again.",
+  ).catch((error) => {
+    logger?.warn("failed to clear stale telegram buffer", {
+      ...sessionLogFields(latest),
+      error,
+    });
+  });
   store.setOutputMessage(latest.sessionKey, null);
   await applySessionRuntimeEvent({
     bot,
@@ -171,7 +181,7 @@ export async function refreshSessionIfActiveTurnIsStale(
 export async function recoverActiveTopicSessions(
   store: SessionStore,
   codex: CodexSdkRuntime,
-  _buffers: MessageBuffer,
+  buffers: MessageBuffer,
   bot: Bot,
   logger?: Logger,
 ): Promise<void> {
@@ -183,7 +193,7 @@ export async function recoverActiveTopicSessions(
   });
 
   for (const session of sessions) {
-    const refreshed = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
+    const refreshed = await refreshSessionIfActiveTurnIsStale(session, store, codex, buffers, bot, logger);
     await sendReplyNotice(
       bot,
       {
@@ -213,7 +223,10 @@ async function runSessionPrompt(input: {
 }): Promise<void> {
   const { sessionKey, prompt, store, codex, buffers, bot, bufferKey, logger } = input;
   const session = store.get(sessionKey);
-  if (!session) return;
+  if (!session) {
+    await buffers.complete(bufferKey, "The topic session no longer exists. Send the message again if you still want to run it.");
+    return;
+  }
 
   logger?.info("starting codex sdk run", {
     ...sessionLogFields(session),

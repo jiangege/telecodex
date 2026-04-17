@@ -20,7 +20,7 @@ import { codeField, replyDocument, replyError, replyNotice, replyUsage, textFiel
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, codex, logger } = deps;
+  const { bot, config, store, projects, codex, buffers, logger } = deps;
 
   bot.command(["start", "help"], wrapUserFacingHandler("help", logger, async (ctx) => {
     await replyNotice(ctx, formatHelpText(ctx, projects));
@@ -108,7 +108,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
-    const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
+    const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, buffers, bot, logger);
     const activeRun = codex.getActiveRun(latestSession.sessionKey);
 
     await replyDocument(ctx, {
@@ -143,7 +143,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     const session = await requireScopedSession(ctx, store, projects, config);
     if (!session) return;
 
-    const latest = store.get(session.sessionKey) ?? session;
+    const latest = await refreshSessionIfActiveTurnIsStale(session, store, codex, buffers, bot, logger);
     if (!codex.isRunning(session.sessionKey)) {
       await replyNotice(ctx, "There is no active Codex SDK turn right now.");
       return;

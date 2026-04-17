@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../config.js";
 import { registerHandlers } from "../bot/registerHandlers.js";
+import { sessionBufferKey } from "../bot/sessionFlow.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createNoopLogger, createTestStores } from "./helpers.js";
 
@@ -346,19 +347,73 @@ test("e2e status recovers stale in-memory running state", async () => {
     await runCommand(harness, "project", `bind ${process.cwd()}`);
     const topicId = 205;
     const sessionKey = `-100:${topicId}`;
+    const bufferKey = sessionBufferKey(sessionKey);
     createTopicSession(harness, topicId);
+    const outputMessageId = await harness.buffers.create(bufferKey, {
+      chatId: -100,
+      messageThreadId: topicId,
+    });
     harness.store.setRuntimeState(sessionKey, {
       status: "running",
       detail: null,
       updatedAt: new Date().toISOString(),
     });
-    harness.store.setOutputMessage(sessionKey, 1234);
+    harness.store.setOutputMessage(sessionKey, outputMessageId);
 
     const replies = await runCommand(harness, "status", "", topicId);
     const status = replies.at(-1) ?? "";
     assert.match(status, /state: failed/);
     assert.match(status, /state detail: The previous run was lost. Send the message again./);
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
+    assert.equal(harness.buffers.has(bufferKey), false);
+    assert.ok(
+      harness.edited.some((entry) => entry.text.includes("The previous run was lost. Send the message again.")) ||
+      harness.sent.some((entry) => entry.text.includes("The previous run was lost. Send the message again.")),
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("e2e stop clears stale typing state before reporting no active run", async () => {
+  const harness = createHarness();
+  const codex = new DeferredCodexRuntime();
+
+  try {
+    registerHandlers({
+      bot: harness.bot,
+      config: harness.config,
+      store: harness.store,
+      projects: harness.projects,
+      codex: codex as never,
+      threadCatalog: harness.threadCatalog,
+      buffers: harness.buffers,
+    });
+
+    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    const topicId = 206;
+    const sessionKey = `-100:${topicId}`;
+    const bufferKey = sessionBufferKey(sessionKey);
+    createTopicSession(harness, topicId);
+    const outputMessageId = await harness.buffers.create(bufferKey, {
+      chatId: -100,
+      messageThreadId: topicId,
+    });
+    harness.store.setRuntimeState(sessionKey, {
+      status: "running",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
+    harness.store.setOutputMessage(sessionKey, outputMessageId);
+
+    const replies = await runCommand(harness, "stop", "", topicId);
+    assert.match(replies.at(-1) ?? "", /There is no active Codex SDK turn right now\./);
+    assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
+    assert.equal(harness.buffers.has(bufferKey), false);
+    assert.ok(
+      harness.edited.some((entry) => entry.text.includes("The previous run was lost. Send the message again.")) ||
+      harness.sent.some((entry) => entry.text.includes("The previous run was lost. Send the message again.")),
+    );
   } finally {
     await harness.cleanup();
   }
@@ -380,7 +435,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    const topicId = 206;
+    const topicId = 207;
     const sessionKey = `-100:${topicId}`;
 
     await runCommand(harness, "mode", "write", topicId);
@@ -468,7 +523,7 @@ test("e2e image messages are ignored with the same busy notice while a run is ac
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    const topicId = 207;
+    const topicId = 208;
     const sessionKey = `-100:${topicId}`;
 
     await runTextMessage(harness, topicId, "active task");
@@ -509,7 +564,7 @@ test("e2e runs clear an invalid stored output schema and continue without it", a
     });
 
     await runCommand(harness, "project", `bind ${process.cwd()}`);
-    const topicId = 208;
+    const topicId = 209;
     const sessionKey = `-100:${topicId}`;
     createTopicSession(harness, topicId);
 
