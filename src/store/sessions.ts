@@ -58,20 +58,9 @@ export interface TelegramSession extends StoredSessionRecord {
   outputMessageId: number | null;
 }
 
-export interface QueuedInput {
-  id: number;
-  sessionKey: string;
-  text: string;
-  input: StoredCodexInput;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export class SessionStore {
   private readonly runtimeStateBySession = new Map<string, SessionRuntimeState>();
   private readonly outputMessageBySession = new Map<string, number | null>();
-  private readonly queueBySession = new Map<string, QueuedInput[]>();
-  private nextQueuedInputId = 1;
 
   constructor(private readonly storage: FileStateStorage) {}
 
@@ -281,80 +270,9 @@ export class SessionStore {
   }
 
   remove(sessionKey: string): void {
-    this.queueBySession.delete(sessionKey);
     this.runtimeStateBySession.delete(sessionKey);
     this.outputMessageBySession.delete(sessionKey);
     this.storage.removeSession(sessionKey);
-  }
-
-  enqueueInput(sessionKey: string, input: StoredCodexInput): QueuedInput {
-    const now = new Date().toISOString();
-    const queued: QueuedInput = {
-      id: this.nextQueuedInputId,
-      sessionKey,
-      text: formatCodexInputPreview(input),
-      input: cloneStoredCodexInput(input),
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.nextQueuedInputId += 1;
-    const queue = this.queueBySession.get(sessionKey) ?? [];
-    queue.push(queued);
-    this.queueBySession.set(sessionKey, queue);
-    return cloneQueuedInput(queued);
-  }
-
-  getQueuedInput(id: number): QueuedInput | null {
-    for (const queue of this.queueBySession.values()) {
-      const match = queue.find((item) => item.id === id);
-      if (match) return cloneQueuedInput(match);
-    }
-    return null;
-  }
-
-  getQueuedInputCount(sessionKey: string): number {
-    return this.queueBySession.get(sessionKey)?.length ?? 0;
-  }
-
-  peekNextQueuedInput(sessionKey: string): QueuedInput | null {
-    const queue = this.queueBySession.get(sessionKey);
-    const [next] = queue ?? [];
-    return next ? cloneQueuedInput(next) : null;
-  }
-
-  listQueuedInputs(sessionKey: string, limit = 5): QueuedInput[] {
-    const queue = this.queueBySession.get(sessionKey) ?? [];
-    return queue.slice(0, limit).map(cloneQueuedInput);
-  }
-
-  removeQueuedInput(id: number): void {
-    for (const [sessionKey, queue] of this.queueBySession.entries()) {
-      const index = queue.findIndex((item) => item.id === id);
-      if (index < 0) continue;
-      queue.splice(index, 1);
-      if (queue.length === 0) {
-        this.queueBySession.delete(sessionKey);
-      }
-      return;
-    }
-  }
-
-  removeQueuedInputForSession(sessionKey: string, id: number): boolean {
-    const queue = this.queueBySession.get(sessionKey);
-    if (!queue) return false;
-    const index = queue.findIndex((item) => item.id === id);
-    if (index < 0) return false;
-    queue.splice(index, 1);
-    if (queue.length === 0) {
-      this.queueBySession.delete(sessionKey);
-    }
-    return true;
-  }
-
-  clearQueuedInputs(sessionKey: string): number {
-    const queue = this.queueBySession.get(sessionKey) ?? [];
-    this.queueBySession.delete(sessionKey);
-    return queue.length;
   }
 
   bindThread(sessionKey: string, threadId: string | null): void {
@@ -454,17 +372,6 @@ function mapStoredSession(
   };
 }
 
-function cloneQueuedInput(input: QueuedInput): QueuedInput {
-  return {
-    ...input,
-    input: cloneStoredCodexInput(input.input),
-  };
-}
-
-function cloneStoredCodexInput(input: StoredCodexInput): StoredCodexInput {
-  return typeof input === "string" ? input : input.map((item) => ({ ...item }));
-}
-
 function normalizeBindingCodeMode(value: string | null): BindingCodeMode {
   return value === "rebind" ? "rebind" : "bootstrap";
 }
@@ -479,10 +386,4 @@ function normalizeOptionalUserId(value: string | null): number | null {
   if (value == null) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-export function formatCodexInputPreview(input: StoredCodexInput): string {
-  if (typeof input === "string") return input;
-  const parts = input.map((item) => (item.type === "text" ? item.text : `[image: ${item.path}]`));
-  return parts.join(" ").trim() || "[image]";
 }

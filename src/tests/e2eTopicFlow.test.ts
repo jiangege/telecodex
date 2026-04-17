@@ -171,7 +171,6 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
     await runTextMessage(harness, topicId, "inspect the project");
     await waitFor(() => codex.calls.length === 1);
 
-    assert.equal(harness.store.getQueuedInputCount(`-100:${topicId}`), 0);
     assert.equal(codex.getActiveRun(`-100:${topicId}`)?.lastEventType, null);
     const preparingStatusReplies = await runCommand(harness, "status", "", topicId);
     const preparingStatus = preparingStatusReplies.at(-1) ?? "";
@@ -187,7 +186,7 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
     assert.equal(session?.outputMessageId, null);
     assert.equal(codex.calls[0]?.profile.cwd, process.cwd());
     assert.equal(codex.calls[0]?.profile.threadId, null);
-    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Starting Codex")));
+    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Starting...")));
     assert.ok(harness.chatActions.some((entry) => entry.messageThreadId === topicId && entry.action === "typing"));
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: inspect the project")));
 
@@ -196,13 +195,12 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
     assert.match(status, /thread: thread-e2e-1/);
     assert.match(status, /state: idle/);
     assert.match(status, /active run: none/);
-    assert.match(status, /queue: 0/);
   } finally {
     await harness.cleanup();
   }
 });
 
-test("e2e topic flow queues follow-up messages and drains them after the active run", async () => {
+test("e2e topic flow ignores follow-up messages while the current run is active", async () => {
   const harness = createHarness();
   const codex = new DeferredCodexRuntime();
 
@@ -225,24 +223,18 @@ test("e2e topic flow queues follow-up messages and drains them after the active 
     await waitFor(() => codex.calls.length === 1 && codex.isRunning(sessionKey));
 
     await runTextMessage(harness, topicId, "second task");
-    assert.equal(harness.store.getQueuedInputCount(sessionKey), 1);
-    const queuedNotice = harness.sent.find(
-      (entry) => entry.messageThreadId === topicId && entry.text.includes("Your message was added to the queue"),
+    const busyNotice = harness.sent.find(
+      (entry) => entry.messageThreadId === topicId && entry.text.includes("Codex is still working in this topic."),
     );
-    assert.ok(queuedNotice);
-    assert.equal(queuedNotice?.options?.parse_mode, undefined);
-    assert.deepEqual(queuedNotice?.options?.link_preview_options, { is_disabled: true });
+    assert.ok(busyNotice);
+    assert.equal(busyNotice?.options?.parse_mode, undefined);
+    assert.deepEqual(busyNotice?.options?.link_preview_options, { is_disabled: true });
 
     codex.calls[0]!.release();
-    await waitFor(() => codex.calls.length === 2 && codex.isRunning(sessionKey));
-    assert.equal(codex.calls[1]?.profile.threadId, "thread-e2e-1");
+    await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle");
 
-    codex.calls[1]!.release();
-    await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle" && harness.store.getQueuedInputCount(sessionKey) === 0);
-
-    assert.deepEqual(codex.calls.map((call) => call.prompt), ["first task", "second task"]);
+    assert.deepEqual(codex.calls.map((call) => call.prompt), ["first task"]);
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: first task")));
-    assert.ok(harness.edited.some((entry) => entry.text.includes("final: second task")));
   } finally {
     await harness.cleanup();
   }
@@ -457,9 +449,12 @@ test("e2e config commands feed the next SDK run profile", async () => {
   }
 });
 
-test("e2e queue commands drop and clear pending messages", async () => {
+test("e2e image messages are ignored with the same busy notice while a run is active", async () => {
   const harness = createHarness();
   const codex = new DeferredCodexRuntime();
+  const originalFetch = global.fetch;
+
+  global.fetch = (async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 })) as typeof fetch;
 
   try {
     registerHandlers({
@@ -479,24 +474,21 @@ test("e2e queue commands drop and clear pending messages", async () => {
     await runTextMessage(harness, topicId, "active task");
     await waitFor(() => codex.calls.length === 1 && codex.isRunning(sessionKey));
 
-    await runTextMessage(harness, topicId, "queued task one");
-    await runTextMessage(harness, topicId, "queued task two");
-    assert.equal(harness.store.getQueuedInputCount(sessionKey), 2);
+    await runImageMessage(harness, topicId, {
+      caption: "queued image",
+      photo: [{ file_id: "photo-busy", width: 1280, height: 720 }],
+    });
 
-    const queued = harness.store.listQueuedInputs(sessionKey, 2);
-    const dropReplies = await runCommand(harness, "queue", `drop ${queued[0]!.id}`, topicId);
-    assert.match(dropReplies.at(-1) ?? "", /Removed queued item/);
-    assert.deepEqual(harness.store.listQueuedInputs(sessionKey, 2).map((item) => item.text), ["queued task two"]);
-
-    const clearReplies = await runCommand(harness, "queue", "clear", topicId);
-    assert.match(clearReplies.at(-1) ?? "", /Cleared the queue and removed 1 pending message/);
-    assert.equal(harness.store.getQueuedInputCount(sessionKey), 0);
+    const busyNotice = harness.sent.find(
+      (entry) => entry.messageThreadId === topicId && entry.text.includes("Codex is still working in this topic."),
+    );
+    assert.ok(busyNotice);
+    assert.deepEqual(codex.calls.map((call) => call.prompt), ["active task"]);
 
     codex.calls[0]!.release();
     await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(codex.calls.map((call) => call.prompt), ["active task"]);
   } finally {
+    global.fetch = originalFetch;
     await harness.cleanup();
   }
 });

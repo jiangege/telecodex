@@ -152,7 +152,6 @@ const groupCommands = [
   { command: "status", description: "Show project or topic status" },
   { command: "project", description: "Show, bind, or unbind project" },
   { command: "thread", description: "List, resume, or create topics" },
-  { command: "queue", description: "List, drop, or clear queued inputs" },
   { command: "stop", description: "Stop the active run" },
   { command: "cwd", description: "Show or set topic directory" },
   { command: "mode", description: "Switch preset mode" },

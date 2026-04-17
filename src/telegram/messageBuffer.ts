@@ -8,10 +8,16 @@ import {
   shouldFallbackToNewMessage,
 } from "./delivery.js";
 import type { Logger } from "../runtime/logger.js";
-import { renderMarkdownForTelegram, renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
+import { escapeHtml, renderMarkdownForTelegram, renderMarkdownToTelegramHtml, renderPlainChunksForTelegram } from "./renderer.js";
+import { splitTelegramHtml } from "./splitMessage.js";
 
 const DEFAULT_ACTIVITY_PULSE_INTERVAL_MS = 4_000;
-const DEFAULT_ACTIVITY_IDLE_MS = 60_000;
+const MAX_PENDING_EDIT_LENGTH = 3_800;
+const MAX_PLAN_LINES = 6;
+const MAX_PROGRESS_LINES = 6;
+const MAX_REASONING_LENGTH = 600;
+const MAX_TOOL_OUTPUT_LENGTH = 1_000;
+const MAX_REPLY_DRAFT_LENGTH = 1_400;
 type MessageBufferTimer = unknown;
 
 export interface MessageBufferScheduler {
@@ -24,7 +30,6 @@ export interface MessageBufferScheduler {
 
 export interface MessageBufferOptions {
   activityPulseIntervalMs?: number;
-  activityIdleMs?: number;
   scheduler?: MessageBufferScheduler;
 }
 
@@ -49,7 +54,6 @@ interface BufferState {
   timer: MessageBufferTimer | null;
   activityTimer: MessageBufferTimer | null;
   activityInFlight: boolean;
-  lastActivityAt: number;
   lastSentText: string;
   queue: Promise<void>;
 }
@@ -57,7 +61,6 @@ interface BufferState {
 export class MessageBuffer {
   private readonly states = new Map<string, BufferState>();
   private readonly activityPulseIntervalMs: number;
-  private readonly activityIdleMs: number;
   private readonly scheduler: MessageBufferScheduler;
 
   constructor(
@@ -67,7 +70,6 @@ export class MessageBuffer {
     input?: MessageBufferOptions,
   ) {
     this.activityPulseIntervalMs = input?.activityPulseIntervalMs ?? DEFAULT_ACTIVITY_PULSE_INTERVAL_MS;
-    this.activityIdleMs = input?.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
     this.scheduler = input?.scheduler ?? defaultScheduler;
   }
 
@@ -84,7 +86,7 @@ export class MessageBuffer {
       {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
-        text: "Starting Codex...",
+        text: "Starting...",
       },
       this.logger,
     );
@@ -101,7 +103,6 @@ export class MessageBuffer {
       timer: null,
       activityTimer: null,
       activityInFlight: false,
-      lastActivityAt: this.scheduler.now(),
       lastSentText: "",
       queue: Promise.resolve(),
     };
@@ -118,7 +119,6 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.text = text;
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -135,7 +135,6 @@ export class MessageBuffer {
     if (state.progressLines.length > 8) {
       state.progressLines.splice(0, state.progressLines.length - 8);
     }
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -144,7 +143,6 @@ export class MessageBuffer {
     if (!state) return;
     if (state.phase === "running") return;
     state.phase = "running";
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -152,7 +150,6 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.planText = text.trim();
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -160,7 +157,6 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.reasoningSummaryText = text.trim();
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -168,7 +164,6 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     state.toolOutputText = truncateTail(text.replace(/\r/g, "").trim(), 2000);
-    this.touchActivity(state);
     this.scheduleFlush(key, state);
   }
 
@@ -222,7 +217,7 @@ export class MessageBuffer {
     await this.enqueue(state, async () => {
       const latest = this.states.get(key);
       if (!latest) return;
-      const text = renderPlainForTelegram(truncateForEdit(composePendingText(latest), latest.phase));
+      const text = composePendingHtml(latest);
       if (text === latest.lastSentText) return;
       await this.safeEdit(latest, text);
     });
@@ -291,10 +286,6 @@ export class MessageBuffer {
   }
 
   private async sendActivityPulse(state: BufferState): Promise<void> {
-    if (this.scheduler.now() - state.lastActivityAt >= this.activityIdleMs) {
-      this.stopActivityPulse(state);
-      return;
-    }
     if (state.activityInFlight) return;
     state.activityInFlight = true;
     try {
@@ -314,13 +305,6 @@ export class MessageBuffer {
       });
     } finally {
       state.activityInFlight = false;
-    }
-  }
-
-  private touchActivity(state: BufferState): void {
-    state.lastActivityAt = this.scheduler.now();
-    if (!state.activityTimer) {
-      this.startActivityPulse(state);
     }
   }
 
@@ -359,45 +343,102 @@ function maybeUnref(timer: MessageBufferTimer): void {
   }
 }
 
-function truncateForEdit(text: string, phase: BufferState["phase"]): string {
-  if (text.length <= 3800) return text || pendingBanner(phase);
-  return `${text.slice(0, 3800)}\n\n...`;
-}
+function composePendingHtml(state: BufferState): string {
+  const sections = [`<b>${escapeHtml(pendingBanner(state.phase))}</b>`];
 
-function composePendingText(state: BufferState): string {
-  const sections = [pendingBanner(state.phase)];
-
-  if (state.planText) {
-    sections.push(`[Plan]\n${state.planText}`);
+  const planSection = renderListSection("Plan", state.planText, {
+    maxLines: MAX_PLAN_LINES,
+  });
+  if (planSection) {
+    sections.push(planSection);
   }
 
-  const reasoningSummary = state.reasoningSummaryText.trim();
-  if (reasoningSummary) {
-    sections.push(`[Reasoning Summary]\n${reasoningSummary}`);
+  const reasoningSection = renderQuoteSection("Reasoning", state.reasoningSummaryText, MAX_REASONING_LENGTH);
+  if (reasoningSection) {
+    sections.push(reasoningSection);
   }
 
-  if (state.progressLines.length > 0) {
-    sections.push(`[Progress]\n${state.progressLines.join("\n")}`);
+  const progressSection = renderListSection("Activity", state.progressLines.join("\n"), {
+    maxLines: MAX_PROGRESS_LINES,
+  });
+  if (progressSection) {
+    sections.push(progressSection);
   }
 
-  const toolOutput = state.toolOutputText.trim();
-  if (toolOutput) {
-    sections.push(`[Tool Output]\n${toolOutput}`);
+  const draftSection = renderDraftSection(state.text);
+  if (draftSection) {
+    sections.push(draftSection);
   }
 
-  const replyDraft = state.text.trim();
-  if (replyDraft) {
-    sections.push(`[Draft Reply]\n${replyDraft}`);
+  const toolOutputSection = renderCodeSection("Terminal", state.toolOutputText, MAX_TOOL_OUTPUT_LENGTH);
+  if (toolOutputSection) {
+    sections.push(toolOutputSection);
   }
 
-  return sections.join("\n\n");
+  return takeFirstPendingChunk(
+    sections.join("\n\n"),
+    `<b>${escapeHtml(pendingBanner(state.phase))}</b>`,
+  );
 }
 
 function pendingBanner(phase: BufferState["phase"]): string {
-  return phase === "running" ? "Codex is working..." : "Starting Codex...";
+  return phase === "running" ? "Working..." : "Starting...";
 }
 
 function truncateTail(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.slice(text.length - maxLength);
+}
+
+function takeFirstPendingChunk(html: string, fallback: string): string {
+  return splitTelegramHtml(html, MAX_PENDING_EDIT_LENGTH)[0] ?? fallback;
+}
+
+function renderListSection(
+  title: string,
+  text: string,
+  options: {
+    maxLines: number;
+  },
+): string | null {
+  const lines = normalizeMultiline(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, options.maxLines);
+  if (lines.length === 0) return null;
+
+  return `<b>${escapeHtml(title)}</b>\n${lines.map((line) => `- ${escapeHtml(line)}`).join("\n")}`;
+}
+
+function renderQuoteSection(title: string, text: string, maxLength: number): string | null {
+  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
+  if (!normalized) return null;
+  return `<b>${escapeHtml(title)}</b>\n<blockquote>${escapeHtml(normalized)}</blockquote>`;
+}
+
+function renderCodeSection(title: string, text: string, maxLength: number): string | null {
+  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
+  if (!normalized) return null;
+  return `<b>${escapeHtml(title)}</b>\n<pre><code>${escapeHtml(normalized)}</code></pre>`;
+}
+
+function renderDraftSection(text: string): string | null {
+  const normalized = truncatePreview(normalizeMultiline(text), MAX_REPLY_DRAFT_LENGTH);
+  if (!normalized) return null;
+
+  return [
+    `<b>Reply Draft</b>`,
+    takeFirstPendingChunk(renderMarkdownToTelegramHtml(normalized), escapeHtml(normalized)),
+  ].join("\n");
+}
+
+function normalizeMultiline(text: string): string {
+  return text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function truncatePreview(text: string, maxLength: number): string {
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }

@@ -35,7 +35,6 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
       "help",
       "admin",
       "status",
-      "queue",
       "stop",
       "project",
       "thread",

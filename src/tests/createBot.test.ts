@@ -85,7 +85,7 @@ test("wireBot syncs Telegram command menus for private chats and groups", async 
     assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "help"));
     assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "thread"));
     assert.ok(botCommands[1]?.commands.some((entry) => entry.description === "List, resume, or create topics"));
-    assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "queue"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "queue"));
   } finally {
     cleanup();
   }

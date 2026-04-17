@@ -21,7 +21,7 @@ test("transcript e2e runs a topic message through preparing, working, and final 
     await harness.waitFor(() => harness.codex.calls.length === 1);
 
     assert.equal(harness.store.get("-1003940193016:301")?.runtimeStatus, "preparing");
-    assert.ok(harness.sendMessageCalls.some((call) => call.payload.text === "Starting Codex..." && call.payload.message_thread_id === 301));
+    assert.ok(harness.sendMessageCalls.some((call) => call.payload.text === "Starting..." && call.payload.message_thread_id === 301));
 
     control.release();
     await harness.waitFor(() => harness.store.get("-1003940193016:301")?.runtimeStatus === "idle");
@@ -46,7 +46,43 @@ test("transcript e2e runs a topic message through preparing, working, and final 
   }
 });
 
-test("transcript e2e queues a follow-up message and drains it after the active run", async () => {
+test("transcript e2e keeps placeholder working drafts out of Telegram progress messages", async () => {
+  const harness = createScenarioHarness();
+  const control = harness.codex.enqueueRun({
+    steps: [
+      { type: "thread.started", thread_id: "thread-working-1" },
+      { type: "turn.started" },
+      { type: "item.updated", item: { id: "msg-working", type: "agent_message", text: "working" } },
+      { type: "item.updated", item: { id: "reason-working", type: "reasoning", text: "Checking the current implementation." } },
+      { type: "pause" },
+      { type: "item.completed", item: { id: "msg-working", type: "agent_message", text: "final working result" } },
+      { type: "turn.completed", usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 2 } },
+    ],
+  });
+
+  try {
+    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupText("inspect the working placeholder", 308);
+    await harness.waitFor(() =>
+      harness.editMessageTextCalls.some((call) =>
+        String(call.payload.text).includes("<b>Reasoning</b>")
+      ),
+    );
+
+    const workingPayload = harness.editMessageTextCalls
+      .map((call) => String(call.payload.text))
+      .find((text) => text.includes("<b>Reasoning</b>"));
+    assert.ok(workingPayload);
+    assert.doesNotMatch(workingPayload ?? "", /<b>Reply Draft<\/b>/);
+
+    control.release();
+    await harness.waitFor(() => harness.store.get("-1003940193016:308")?.runtimeStatus === "idle");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("transcript e2e ignores a follow-up message while the active run is still busy", async () => {
   const harness = createScenarioHarness();
   const first = harness.codex.enqueueRun({
     steps: [
@@ -57,13 +93,6 @@ test("transcript e2e queues a follow-up message and drains it after the active r
       { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
     ],
   });
-  harness.codex.enqueueRun({
-    steps: [
-      { type: "turn.started" },
-      { type: "item.completed", item: { id: "msg-q2", type: "agent_message", text: "second result" } },
-      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
-    ],
-  });
 
   try {
     await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
@@ -71,22 +100,15 @@ test("transcript e2e queues a follow-up message and drains it after the active r
     await harness.waitFor(() => harness.codex.isRunning("-1003940193016:302"));
 
     await harness.sendGroupText("second task", 302);
-    assert.equal(harness.store.getQueuedInputCount("-1003940193016:302"), 1);
-    const queueNotice = harness.sendMessageCalls.find((call) => String(call.payload.text).includes("Your message was added to the queue."));
-    assert.ok(queueNotice);
-    assert.equal(queueNotice?.payload.parse_mode, undefined);
-    assert.deepEqual(queueNotice?.payload.link_preview_options, { is_disabled: true });
+    const busyNotice = harness.sendMessageCalls.find((call) => String(call.payload.text).includes("Codex is still working in this topic."));
+    assert.ok(busyNotice);
+    assert.equal(busyNotice?.payload.parse_mode, undefined);
+    assert.deepEqual(busyNotice?.payload.link_preview_options, { is_disabled: true });
 
     first.release();
-    await harness.waitFor(() => harness.codex.calls.length === 2);
-    await harness.waitFor(
-      () =>
-        harness.store.get("-1003940193016:302")?.runtimeStatus === "idle" &&
-        harness.store.getQueuedInputCount("-1003940193016:302") === 0,
-    );
+    await harness.waitFor(() => harness.store.get("-1003940193016:302")?.runtimeStatus === "idle");
 
-    assert.equal(harness.codex.calls[1]?.profile.threadId, "thread-queue-1");
-    assert.deepEqual(harness.codex.calls.map((call) => call.prompt), ["first task", "second task"]);
+    assert.deepEqual(harness.codex.calls.map((call) => call.prompt), ["first task"]);
   } finally {
     await harness.cleanup();
   }
@@ -195,8 +217,8 @@ test("transcript e2e splits long markdown final replies into valid Telegram HTML
     await harness.waitFor(() => harness.store.get("-1003940193016:305")?.runtimeStatus === "idle");
 
     const finalChunks = [
-      ...harness.editMessageTextCalls.filter((call) => call.payload.message_id != null && String(call.payload.text) !== "Starting Codex..."),
-      ...harness.sendMessageCalls.filter((call) => call.payload.message_thread_id === 305 && String(call.payload.text) !== "Starting Codex..."),
+      ...harness.editMessageTextCalls.filter((call) => call.payload.message_id != null && String(call.payload.text) !== "Starting..."),
+      ...harness.sendMessageCalls.filter((call) => call.payload.message_thread_id === 305 && String(call.payload.text) !== "Starting..."),
     ].map((call) => String(call.payload.text));
 
     assert.ok(finalChunks.length > 1);

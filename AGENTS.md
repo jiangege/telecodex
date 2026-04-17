@@ -28,14 +28,15 @@
 - One Telegram forum supergroup maps to one project.
 - One topic inside that supergroup maps to one Codex thread.
 - Each topic has at most one active run.
-- Follow-up messages during an active run are queued and processed in order.
-- The queue is runtime-only and must not become durable state again.
+- Follow-up messages during an active run are ignored and should receive a fixed busy notice.
+- `/stop` is the only user-facing interruption path during an active run.
+- Telegram typing should stay active for the duration of a run, subject to Telegram rate limits.
 
 ## State Model
 
 - Codex thread history comes from Codex session files and is not duplicated into telecodex state.
 - Durable telecodex state lives in local JSON files under `~/.telecodex/state/`.
-- Runtime state, active output message ids, and queued follow-up inputs are in-memory only.
+- Runtime state and active output message ids are in-memory only.
 - Legacy SQLite exists only as a one-time migration source and should not be reintroduced as the normal runtime store.
 
 ## Implementation Guidance

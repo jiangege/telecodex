@@ -92,7 +92,7 @@ function createDeferredTurnRuntime() {
   };
 }
 
-test("handleUserText queues when a session already has an active SDK run", async () => {
+test("handleUserText sends a fixed busy notice when a session already has an active SDK run", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot, sent } = createFakeBot();
   try {
@@ -121,9 +121,10 @@ test("handleUserText queues when a session already has an active SDK run", async
       logger: createNoopLogger(),
     });
 
-    assert.equal(result.status, "queued");
-    assert.equal(store.getQueuedInputCount(session.sessionKey), 1);
-    assert.match(sent.at(-1)?.text ?? "", /Your message was added to the queue/);
+    assert.equal(result.status, "busy");
+    assert.match(sent.at(-1)?.text ?? "", /Codex is still working in this topic/);
+    assert.match(sent.at(-1)?.text ?? "", /New messages are ignored until the current run finishes or fails/);
+    assert.match(sent.at(-1)?.text ?? "", /Use \/stop to interrupt it/);
   } finally {
     cleanup();
   }

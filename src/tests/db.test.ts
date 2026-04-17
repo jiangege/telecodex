@@ -154,7 +154,6 @@ test("legacy SQLite state migrates into file-backed state without importing runt
     assert.deepEqual(session?.additionalDirectories, ["/repo/shared"]);
     assert.equal(session?.runtimeStatus, "idle");
     assert.equal(session?.outputMessageId, null);
-    assert.equal(store.getQueuedInputCount("-100:7"), 0);
     assert.equal(existsSync(legacyDbPath), false);
     assert.equal(existsSync(`${legacyDbPath}-wal`), false);
     assert.equal(existsSync(`${legacyDbPath}-shm`), false);

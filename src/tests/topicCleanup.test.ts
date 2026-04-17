@@ -15,7 +15,6 @@ test("cleanupMissingTopicBindings removes stale topic sessions whose Telegram to
       defaultCwd: process.cwd(),
       defaultModel: "gpt-5.4",
     });
-    store.enqueueInput(stale.sessionKey, "queued work");
     store.bindThread(stale.sessionKey, "thread-stale");
 
     const live = store.getOrCreate({
@@ -49,7 +48,6 @@ test("cleanupMissingTopicBindings removes stale topic sessions whose Telegram to
       failed: 0,
     });
     assert.equal(store.get(stale.sessionKey), null);
-    assert.equal(store.getQueuedInputCount(stale.sessionKey), 0);
     assert.ok(store.get(live.sessionKey));
   } finally {
     cleanup();

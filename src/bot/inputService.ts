@@ -18,8 +18,6 @@ import { sendReplyNotice } from "../telegram/formatted.js";
 import { CodexSdkRuntime, isAbortError } from "../codex/sdkRuntime.js";
 import { numericChatId, numericMessageThreadId } from "./session.js";
 import {
-  describeBusyStatus,
-  formatIsoTimestamp,
   isSessionBusy,
   sessionBufferKey,
   sessionLogFields,
@@ -27,9 +25,15 @@ import {
 } from "./sessionFlow.js";
 
 export interface HandleUserTextResult {
-  status: "started" | "queued" | "busy" | "failed";
+  status: "started" | "busy" | "failed";
   consumed: boolean;
 }
+
+const BUSY_NOTICE_LINES = [
+  "Codex is still working in this topic.",
+  "New messages are ignored until the current run finishes or fails.",
+  "Use /stop to interrupt it.",
+];
 
 export async function handleUserText(input: {
   text: string;
@@ -39,7 +43,6 @@ export async function handleUserText(input: {
   buffers: MessageBuffer;
   bot: Bot;
   logger?: Logger;
-  enqueueIfBusy?: boolean;
 }): Promise<HandleUserTextResult> {
   return handleUserInput({
     prompt: input.text,
@@ -49,7 +52,6 @@ export async function handleUserText(input: {
     buffers: input.buffers,
     bot: input.bot,
     ...(input.logger ? { logger: input.logger } : {}),
-    ...(input.enqueueIfBusy == null ? {} : { enqueueIfBusy: input.enqueueIfBusy }),
   });
 }
 
@@ -61,38 +63,22 @@ export async function handleUserInput(input: {
   buffers: MessageBuffer;
   bot: Bot;
   logger?: Logger;
-  enqueueIfBusy?: boolean;
 }): Promise<HandleUserTextResult> {
   const { prompt, store, codex, buffers, bot, logger } = input;
-  const enqueueIfBusy = input.enqueueIfBusy ?? true;
   const session = await refreshSessionIfActiveTurnIsStale(input.session, store, codex, bot, logger);
 
   if (isSessionBusy(session) || codex.isRunning(session.sessionKey)) {
-    if (!enqueueIfBusy) {
-      return {
-        status: "busy",
-        consumed: false,
-      };
-    }
-
-    const queued = store.enqueueInput(session.sessionKey, prompt);
-    const queueDepth = store.getQueuedInputCount(session.sessionKey);
     await sendReplyNotice(
       bot,
       {
         chatId: numericChatId(session),
         messageThreadId: numericMessageThreadId(session),
       },
-      [
-        `Codex is still ${describeBusyStatus(session.runtimeStatus)}. Your message was added to the queue.`,
-        `queue position: ${queueDepth}`,
-        `queued at: ${formatIsoTimestamp(queued.createdAt)}`,
-        "It will be processed automatically after the current run finishes.",
-      ],
+      BUSY_NOTICE_LINES,
       logger,
     );
     return {
-      status: "queued",
+      status: "busy",
       consumed: true,
     };
   }
@@ -215,42 +201,6 @@ export async function recoverActiveTopicSessions(
   }
 }
 
-export async function processNextQueuedInputForSession(
-  sessionKey: string,
-  store: SessionStore,
-  codex: CodexSdkRuntime,
-  buffers: MessageBuffer,
-  bot: Bot,
-  logger?: Logger,
-): Promise<void> {
-  const session = store.get(sessionKey);
-  if (!session || isSessionBusy(session) || codex.isRunning(sessionKey)) return;
-  const next = store.peekNextQueuedInput(sessionKey);
-  if (!next) return;
-
-  try {
-    const result = await handleUserInput({
-      prompt: next.input,
-      session,
-      store,
-      codex,
-      buffers,
-      bot,
-      enqueueIfBusy: false,
-      ...(logger ? { logger } : {}),
-    });
-    if (result.consumed) {
-      store.removeQueuedInput(next.id);
-    }
-  } catch (error) {
-    logger?.warn("failed to process queued telegram input", {
-      sessionKey,
-      queuedInputId: next.id,
-      error,
-    });
-  }
-}
-
 async function runSessionPrompt(input: {
   sessionKey: string;
   prompt: StoredCodexInput;
@@ -355,8 +305,6 @@ async function runSessionPrompt(input: {
       error,
     });
     await buffers.fail(bufferKey, userFacingMessage);
-  } finally {
-    await processNextQueuedInputForSession(sessionKey, store, codex, buffers, bot, logger);
   }
 }
 
@@ -395,16 +343,11 @@ async function projectEventToTelegramBuffer(
 ): Promise<void> {
   switch (event.type) {
     case "thread.started":
-      buffers.note(key, `thread started: ${event.thread_id}`);
       return;
     case "turn.started":
       buffers.markTurnStarted(key);
       return;
     case "turn.completed":
-      buffers.note(
-        key,
-        `token usage: in ${event.usage.input_tokens}, out ${event.usage.output_tokens}, cached ${event.usage.cached_input_tokens}`,
-      );
       return;
     case "item.started":
     case "item.updated":
@@ -412,10 +355,10 @@ async function projectEventToTelegramBuffer(
       projectItem(buffers, key, event.item, event.type);
       return;
     case "turn.failed":
-      buffers.note(key, `run failed: ${event.error.message}`);
+      buffers.note(key, `Run failed: ${event.error.message}`);
       return;
     case "error":
-      buffers.note(key, `error: ${event.message}`);
+      buffers.note(key, `Error: ${event.message}`);
       return;
   }
 }
@@ -428,7 +371,9 @@ function projectItem(
 ): void {
   switch (item.type) {
     case "agent_message":
-      buffers.setReplyDraft(key, item.text);
+      if (!isWorkingDraftPlaceholder(item.text)) {
+        buffers.setReplyDraft(key, item.text);
+      }
       return;
     case "reasoning":
       buffers.setReasoningSummary(key, item.text);
@@ -449,7 +394,7 @@ function projectItem(
       projectTodoList(buffers, key, item);
       return;
     case "error":
-      buffers.note(key, `error: ${truncateSingleLine(item.message, 120)}`);
+      buffers.note(key, `Error: ${truncateSingleLine(item.message, 120)}`);
       return;
   }
 }
@@ -461,10 +406,10 @@ function projectCommandExecution(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.started") {
-    buffers.note(key, `command: ${truncateSingleLine(item.command, 120)}`);
+    buffers.note(key, `Running command: ${truncateSingleLine(item.command, 120)}`);
   } else if (phase === "item.completed") {
     const exitCode = item.exit_code == null ? "?" : String(item.exit_code);
-    const prefix = item.status === "failed" ? "command failed" : "command completed";
+    const prefix = item.status === "failed" ? "Command failed" : "Command finished";
     buffers.note(key, `${prefix}: ${truncateSingleLine(item.command, 96)} (exit ${exitCode})`);
   }
 
@@ -480,12 +425,12 @@ function projectFileChange(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.started") {
-    buffers.note(key, `file changes: ${item.changes.length} entries`);
+    buffers.note(key, `Preparing file changes: ${item.changes.length} entries`);
     return;
   }
 
   if (phase === "item.completed") {
-    const prefix = item.status === "failed" ? "file changes failed" : "file changes completed";
+    const prefix = item.status === "failed" ? "File changes failed" : "Applied file changes";
     buffers.note(key, `${prefix}: ${item.changes.length} entries`);
   }
 }
@@ -497,14 +442,14 @@ function projectMcpToolCall(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.started") {
-    buffers.note(key, `MCP: ${item.server}/${item.tool}`);
+    buffers.note(key, `Calling MCP: ${item.server}/${item.tool}`);
     return;
   }
 
   if (phase === "item.completed") {
     buffers.note(
       key,
-      item.error ? `MCP failed: ${item.server}/${item.tool}` : `MCP completed: ${item.server}/${item.tool}`,
+      item.error ? `MCP failed: ${item.server}/${item.tool}` : `MCP finished: ${item.server}/${item.tool}`,
     );
   }
 }
@@ -516,10 +461,10 @@ function projectWebSearch(
   phase: "item.started" | "item.updated" | "item.completed",
 ): void {
   if (phase === "item.completed") {
-    buffers.note(key, `web search completed: ${truncateSingleLine(item.query, 120)}`);
+    buffers.note(key, `Web search finished: ${truncateSingleLine(item.query, 120)}`);
     return;
   }
-  buffers.note(key, `web search: ${truncateSingleLine(item.query, 120)}`);
+  buffers.note(key, `Searching web: ${truncateSingleLine(item.query, 120)}`);
 }
 
 function projectTodoList(buffers: MessageBuffer, key: string, item: TodoListItem): void {
@@ -529,6 +474,11 @@ function projectTodoList(buffers: MessageBuffer, key: string, item: TodoListItem
   if (lines.length > 0) {
     buffers.setPlan(key, lines.join("\n"));
   }
+}
+
+function isWorkingDraftPlaceholder(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized === "working" || normalized === "working..." || normalized === "working.";
 }
 
 function toSdkInput(input: StoredCodexInput): Input {

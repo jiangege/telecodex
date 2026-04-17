@@ -53,32 +53,55 @@ test("MessageBuffer starts as starting and switches to working after turn start"
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
 
   await buffers.create("thread-phase:turn-1", { chatId: 1, messageThreadId: 2 });
-  assert.match(sent[0]?.text ?? "", /Starting Codex/);
+  assert.match(sent[0]?.text ?? "", /Starting\.\.\./);
 
   buffers.markTurnStarted("thread-phase:turn-1");
   await delay(4);
 
-  assert.ok(edited.some((entry) => entry.text.includes("Codex is working...")));
+  assert.ok(edited.some((entry) => entry.text.includes("Working...")));
   await buffers.complete("thread-phase:turn-1", "done");
 });
 
-test("MessageBuffer stops typing after idle activity and resumes on new progress", async () => {
+test("MessageBuffer renders structured working sections as Telegram HTML", async () => {
+  const { bot, edited } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+
+  await buffers.create("thread-structured:turn-1", { chatId: 1, messageThreadId: 2 });
+  buffers.markTurnStarted("thread-structured:turn-1");
+  buffers.setPlan("thread-structured:turn-1", "[todo] inspect logs\n[done] confirm repro");
+  buffers.setReasoningSummary("thread-structured:turn-1", "Comparing the failing path with the successful one.");
+  buffers.note("thread-structured:turn-1", "Running command: npm test -- runInBand");
+  buffers.setReplyDraft("thread-structured:turn-1", "## Draft\n\nNeed one guard clause.");
+  buffers.setToolOutput("thread-structured:turn-1", "stderr line 1\nstdout line 2");
+
+  await delay(4);
+
+  const latest = edited.at(-1)?.text ?? "";
+  assert.match(latest, /<b>Working\.\.\.<\/b>/);
+  assert.match(latest, /<b>Plan<\/b>/);
+  assert.match(latest, /<b>Reasoning<\/b>/);
+  assert.match(latest, /<blockquote>/);
+  assert.match(latest, /<b>Activity<\/b>/);
+  assert.match(latest, /<b>Reply Draft<\/b>/);
+  assert.match(latest, /<b>Draft<\/b>/);
+  assert.match(latest, /<b>Terminal<\/b>/);
+  assert.match(latest, /<pre><code>stderr line 1/);
+
+  await buffers.complete("thread-structured:turn-1", "done");
+});
+
+test("MessageBuffer keeps typing active until the run completes", async () => {
   const { bot, chatActions } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger(), {
     activityPulseIntervalMs: 2,
-    activityIdleMs: 5,
   });
 
   await buffers.create("thread-idle:turn-1", { chatId: 1, messageThreadId: 2 });
   await delay(12);
 
-  const stoppedCount = chatActions.length;
+  const pulseCount = chatActions.length;
   await delay(8);
-  assert.equal(chatActions.length, stoppedCount);
-
-  buffers.note("thread-idle:turn-1", "still working");
-  await delay(4);
-  assert.ok(chatActions.length > stoppedCount);
+  assert.ok(chatActions.length > pulseCount);
 
   await buffers.complete("thread-idle:turn-1", "done");
 });

@@ -52,8 +52,9 @@ Optional security override:
 - One Telegram forum supergroup represents one project.
 - One topic inside that supergroup represents one Codex thread.
 - Work happens by sending normal messages inside the topic.
-- While a run is active, follow-up messages are queued automatically.
+- While a run is active, follow-up messages are ignored and Telegram typing stays active.
 - `/status` shows the current runtime state.
+- `/stop` interrupts the active run in the current topic.
 
 Private chat is only for bootstrap and lightweight admin actions.
 

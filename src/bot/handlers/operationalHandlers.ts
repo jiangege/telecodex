@@ -109,8 +109,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     if (!session) return;
 
     const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, bot, logger);
-    const queueDepth = store.getQueuedInputCount(latestSession.sessionKey);
-    const queuedPreview = store.listQueuedInputs(latestSession.sessionKey, 3);
     const activeRun = codex.getActiveRun(latestSession.sessionKey);
 
     await replyDocument(ctx, {
@@ -126,8 +124,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         codeField("active run thread", activeRun?.threadId ?? "none"),
         textField("active run last event", activeRun?.lastEventType ?? "none"),
         textField("active run last update", activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "none"),
-        textField("queue", queueDepth),
-        textField("queue next", formatQueuedPreview(queuedPreview)),
         codeField("cwd", latestSession.cwd),
         textField("preset", presetFromProfile(latestSession)),
         textField("sandbox", latestSession.sandboxMode),
@@ -141,51 +137,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         textField("effort", formatReasoningEffort(latestSession.reasoningEffort)),
       ],
     });
-  }));
-
-  bot.command("queue", wrapUserFacingHandler("queue", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
-    if (!session) return;
-
-    const { command, args } = parseSubcommand(ctx.match.trim());
-    if (!command) {
-      const queued = store.listQueuedInputs(session.sessionKey, 5);
-      const queueDepth = store.getQueuedInputCount(session.sessionKey);
-      await replyDocument(ctx, {
-        title: "Queue",
-        fields: [
-          textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
-          textField("queue", queueDepth),
-        ],
-        sections: [
-          {
-            title: "Items",
-            lines: queued.length > 0 ? [formatQueuedItems(queued)] : ["none"],
-          },
-        ],
-        footer: "Usage: /queue | /queue drop <id> | /queue clear",
-      });
-      return;
-    }
-
-    if (command === "clear") {
-      const removed = store.clearQueuedInputs(session.sessionKey);
-      await replyNotice(ctx, `Cleared the queue and removed ${removed} pending message(s).`);
-      return;
-    }
-
-    if (command === "drop") {
-      const id = Number(args);
-      if (!Number.isInteger(id) || id <= 0) {
-        await replyUsage(ctx, "/queue drop <id>");
-        return;
-      }
-      const removed = store.removeQueuedInputForSession(session.sessionKey, id);
-      await replyNotice(ctx, removed ? `Removed queued item #${id}.` : `Queued item #${id} was not found.`);
-      return;
-    }
-
-    await replyUsage(ctx, "/queue | /queue drop <id> | /queue clear");
   }));
 
   bot.command("stop", wrapUserFacingHandler("stop", logger, async (ctx) => {
@@ -210,19 +161,4 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
       await replyError(ctx, `Interrupt failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }));
-}
-
-function formatQueuedPreview(items: Array<{ text: string }>): string {
-  if (items.length === 0) return "none";
-  return items.map((item) => singleLinePreview(item.text)).join(" | ");
-}
-
-function formatQueuedItems(items: Array<{ id: number; text: string; createdAt: string }>): string {
-  return items.map((item) => `#${item.id} ${singleLinePreview(item.text)} (${formatIsoTimestamp(item.createdAt)})`).join("\n");
-}
-
-function singleLinePreview(text: string, maxLength = 48): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength - 3)}...`;
 }

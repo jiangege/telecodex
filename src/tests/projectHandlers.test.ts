@@ -260,29 +260,33 @@ test("/thread new requires an existing topic context", async () => {
   }
 });
 
-test("/thread resume refuses to change binding while queued messages exist", async () => {
-  const { store, projects, cleanup, bot, commands, threadCatalog, codex } = createDeps();
+test("/thread resume refuses to change binding while a run is active", async () => {
+  const { store, projects, cleanup, bot, commands, threadCatalog } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
       sessionKey: "-100:60",
       chatId: "-100",
       messageThreadId: "60",
-      telegramTopicName: "Queued Topic",
+      telegramTopicName: "Busy Topic",
       defaultCwd: process.cwd(),
       defaultModel: "gpt-5.4",
     });
-    store.enqueueInput(session.sessionKey, "queued work");
+    store.setRuntimeState(session.sessionKey, {
+      status: "running",
+      detail: null,
+      updatedAt: new Date().toISOString(),
+    });
     threadCatalog.setThreads([
       {
-        id: "thread-queued",
+        id: "thread-busy",
         cwd: process.cwd(),
         createdAt: "2026-04-15T00:00:00.000Z",
         updatedAt: "2026-04-15T01:00:00.000Z",
-        preview: "Queued thread",
+        preview: "Busy thread",
         source: "cli",
         modelProvider: "openai",
-        sessionPath: "/tmp/thread-queued.jsonl",
+        sessionPath: "/tmp/thread-busy.jsonl",
       },
     ]);
 
@@ -291,7 +295,9 @@ test("/thread resume refuses to change binding while queued messages exist", asy
       config: createConfig(),
       store,
       projects,
-      codex: codex as never,
+      codex: {
+        isRunning: (sessionKey: string) => sessionKey === session.sessionKey,
+      } as never,
       threadCatalog,
       buffers: {} as never,
     });
@@ -302,14 +308,14 @@ test("/thread resume refuses to change binding while queued messages exist", asy
     await handler!({
       chat: { id: -100, type: "supergroup" },
       message: { message_thread_id: 60 },
-      match: "resume thread-queued",
+      match: "resume thread-busy",
       reply: async (text: string) => {
         replies.push(text);
         return undefined;
       },
     });
 
-    assert.match(replies.at(-1) ?? "", /Clear 1 queued message\(s\) before changing the thread binding/);
+    assert.match(replies.at(-1) ?? "", /Stop the current run before changing the thread binding/);
     assert.equal(store.get(session.sessionKey)?.codexThreadId, null);
   } finally {
     cleanup();

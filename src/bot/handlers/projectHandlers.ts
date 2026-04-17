@@ -111,7 +111,6 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
             codeField("thread", session.codexThreadId ?? "not created"),
             textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
             textField("state detail", session.runtimeStatusDetail ?? "none"),
-            textField("queue", store.getQueuedInputCount(session.sessionKey)),
             codeField("cwd", session.cwd),
           ],
           footer: ["Manage threads in this project:", "/thread list", "/thread new", "/thread resume <threadId>"],
@@ -325,11 +324,6 @@ async function requireIdleThreadMutationTarget(
   const latest = store.get(session.sessionKey) ?? session;
   if (isSessionBusy(latest) || codex.isRunning(latest.sessionKey)) {
     await replyNotice(ctx, "Stop the current run before changing the thread binding for this topic.");
-    return null;
-  }
-  const queueDepth = store.getQueuedInputCount(latest.sessionKey);
-  if (queueDepth > 0) {
-    await replyNotice(ctx, `Clear ${queueDepth} queued message(s) before changing the thread binding for this topic.`);
     return null;
   }
   return latest;
