@@ -56,5 +56,8 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
     ]),
   );
 
-  assert.deepEqual(events, [["message:forum_topic_created", "message:forum_topic_edited"], "message:text", ["message:photo", "message:document"]]);
+  assert.deepEqual(
+    events,
+    [["message:forum_topic_created", "message:forum_topic_edited"], "callback_query:data", "message:text", ["message:photo", "message:document"]],
+  );
 });

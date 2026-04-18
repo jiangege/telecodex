@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { GrammyError, HttpError } from "grammy";
-import { editHtmlMessage, sendHtmlChunks, sendHtmlMessage, sendTypingAction } from "../telegram/delivery.js";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  editTextMessage,
+  sendMediaMessage,
+  sendTextChunks,
+  sendTextMessage,
+  sendTypingAction,
+  splitRenderedText,
+} from "../telegram/delivery.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createNoopLogger, createFakeBot } from "./helpers.js";
 
-test("editHtmlMessage retries on Telegram 429", async () => {
+test("editTextMessage retries on Telegram 429", async () => {
   let calls = 0;
   const bot = {
     api: {
@@ -19,19 +29,19 @@ test("editHtmlMessage retries on Telegram 429", async () => {
     },
   } as never;
 
-  await editHtmlMessage(
+  await editTextMessage(
     bot,
     {
       chatId: 1,
       messageId: 2,
-      text: "hello",
+      message: { text: "hello" },
     },
     createNoopLogger(),
   );
   assert.equal(calls, 3);
 });
 
-test("editHtmlMessage retries on transient Telegram network errors", async () => {
+test("editTextMessage retries on transient Telegram network errors", async () => {
   let calls = 0;
   const startedAt = Date.now();
   const bot = {
@@ -46,12 +56,12 @@ test("editHtmlMessage retries on transient Telegram network errors", async () =>
     },
   } as never;
 
-  await editHtmlMessage(
+  await editTextMessage(
     bot,
     {
       chatId: 1,
       messageId: 2,
-      text: "hello",
+      message: { text: "hello" },
     },
     createNoopLogger(),
   );
@@ -60,7 +70,7 @@ test("editHtmlMessage retries on transient Telegram network errors", async () =>
   assert.ok(Date.now() - startedAt >= 250);
 });
 
-test("sendHtmlMessage does not retry transient network errors", async () => {
+test("sendTextMessage does not retry transient network errors", async () => {
   let calls = 0;
   const bot = {
     api: {
@@ -73,12 +83,12 @@ test("sendHtmlMessage does not retry transient network errors", async () => {
 
   await assert.rejects(
     () =>
-      sendHtmlMessage(
+      sendTextMessage(
         bot,
         {
           chatId: 1,
           messageThreadId: 2,
-          text: "hello",
+          message: { text: "hello" },
         },
         createNoopLogger(),
       ),
@@ -88,17 +98,24 @@ test("sendHtmlMessage does not retry transient network errors", async () => {
   assert.equal(calls, 1);
 });
 
-test("sendHtmlChunks preserves valid html across long formatted messages", async () => {
+test("sendTextChunks preserves entities across long formatted messages", async () => {
   const { bot, sent } = createFakeBot();
   const boldText = "alpha ".repeat(900);
   const italicText = "beta ".repeat(900);
+  const text = `${boldText}\n\n${italicText}`;
 
-  await sendHtmlChunks(
+  await sendTextChunks(
     bot,
     {
       chatId: 1,
       messageThreadId: 2,
-      text: `<b>${boldText}</b>\n\n<i>${italicText}</i>`,
+      message: {
+        text,
+        entities: [
+          { type: "bold", offset: 0, length: boldText.length },
+          { type: "italic", offset: boldText.length + 2, length: italicText.length },
+        ],
+      },
     },
     createNoopLogger(),
   );
@@ -106,8 +123,84 @@ test("sendHtmlChunks preserves valid html across long formatted messages", async
   assert.ok(sent.length > 1);
   for (const message of sent) {
     assert.ok(message.text.length <= 3900);
-    assert.equal(count(message.text, "<b>"), count(message.text, "</b>"));
-    assert.equal(count(message.text, "<i>"), count(message.text, "</i>"));
+    const entities = (message.options?.entities as Array<{ type: string }> | undefined) ?? [];
+    assert.ok(entities.length > 0);
+  }
+});
+
+test("splitRenderedText preserves grapheme clusters and entity coverage", () => {
+  const familyEmoji = "👨‍👩‍👧‍👦";
+  const text = familyEmoji.repeat(4);
+  const chunks = splitRenderedText(
+    {
+      text,
+      entities: [{ type: "bold", offset: 0, length: text.length }],
+    },
+    familyEmoji.length + 1,
+  );
+
+  assert.deepEqual(chunks.map((chunk) => chunk.text), [familyEmoji, familyEmoji, familyEmoji, familyEmoji]);
+  assert.equal(chunks.map((chunk) => chunk.text).join(""), text);
+  for (const chunk of chunks) {
+    assert.deepEqual(chunk.entities, [{ type: "bold", offset: 0, length: familyEmoji.length }]);
+  }
+});
+
+test("splitRenderedText preserves pre language when slicing long code blocks", () => {
+  const line = 'console.log("x");\n';
+  const text = line.repeat(300);
+  const chunks = splitRenderedText(
+    {
+      text,
+      entities: [{ type: "pre", offset: 0, length: text.length, language: "ts" }],
+    },
+    500,
+  );
+
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.deepEqual(chunk.entities, [{ type: "pre", offset: 0, length: chunk.text.length, language: "ts" }]);
+  }
+});
+
+test("sendMediaMessage truncates captions and preserves caption entities", async () => {
+  const { bot, sentPhotos } = createFakeBot();
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-caption-"));
+  const imagePath = path.join(projectRoot, "caption.png");
+  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  try {
+    const boldText = "A".repeat(900);
+    const linkedText = "B".repeat(200);
+    await sendMediaMessage(
+      bot,
+      {
+        chatId: 1,
+        messageThreadId: 2,
+        source: imagePath,
+        scope: {
+          projectRoot,
+          workingDirectory: projectRoot,
+        },
+        caption: {
+          caption: `${boldText}${linkedText}`,
+          caption_entities: [
+            { type: "bold", offset: 0, length: boldText.length },
+            { type: "text_link", offset: boldText.length, length: linkedText.length, url: "https://example.com/caption" },
+          ],
+        },
+      },
+      createNoopLogger(),
+    );
+
+    assert.equal(sentPhotos.length, 1);
+    assert.equal(sentPhotos[0]?.options?.caption, `${boldText}${linkedText.slice(0, 124)}`);
+    assert.deepEqual(sentPhotos[0]?.options?.caption_entities, [
+      { type: "bold", offset: 0, length: 900 },
+      { type: "text_link", offset: 900, length: 124, url: "https://example.com/caption" },
+    ]);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
@@ -154,12 +247,12 @@ test("telegram calls share a bot-level cooldown after a 429", async () => {
   } as never;
 
   const startedAt = Date.now();
-  const first = editHtmlMessage(
+  const first = editTextMessage(
     bot,
     {
       chatId: 1,
       messageId: 2,
-      text: "hello",
+      message: { text: "hello" },
     },
     createNoopLogger(),
   );
@@ -215,10 +308,6 @@ function fakeGrammyError(description: string, retryAfter: number): GrammyError {
 function fakeHttpError(message: string, code: string): HttpError {
   const cause = Object.assign(new Error(message), { code });
   return new HttpError("Network request for 'editMessageText' failed!", cause);
-}
-
-function count(text: string, needle: string): number {
-  return text.split(needle).length - 1;
 }
 
 async function flushMicrotasks(): Promise<void> {

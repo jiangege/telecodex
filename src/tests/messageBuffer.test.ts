@@ -7,7 +7,7 @@ import path from "node:path";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeBot, createNoopLogger } from "./helpers.js";
 
-test("MessageBuffer completes long markdown replies without losing chunks", async () => {
+test("MessageBuffer completes long markdown replies without losing formatted chunks", async () => {
   const { bot, edited, sent } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
   await buffers.create("thread-1:turn-1", { chatId: 1, messageThreadId: 2 });
@@ -26,16 +26,18 @@ test("MessageBuffer completes long markdown replies without losing chunks", asyn
 
   await buffers.complete("thread-1:turn-1", markdown);
 
-  assert.ok((edited.at(-1)?.text.length ?? 0) <= 3900);
-  assert.ok(sent.length >= 2);
+  const payloads = [
+    ...edited.filter((entry) => entry.messageId != null).map((entry) => ({ text: entry.text, options: entry.options })),
+    ...sent.map((message) => ({ text: message.text, options: message.options ?? undefined })),
+  ].filter((entry) => entry.text !== "Starting...");
 
-  const chunks = [edited.at(-1)?.text ?? "", ...sent.map((message) => message.text)];
-  for (const chunk of chunks) {
-    assert.ok(chunk.length <= 3900);
-    assert.equal(count(chunk, "<b>"), count(chunk, "</b>"));
-    assert.equal(count(chunk, "<code>"), count(chunk, "</code>"));
-    assert.equal(count(chunk, "<pre>"), count(chunk, "</pre>"));
+  assert.ok(payloads.length > 1);
+  const allEntities = payloads.flatMap((payload) => ((payload.options?.entities as Array<{ type: string }> | undefined) ?? []));
+  for (const payload of payloads) {
+    assert.ok(payload.text.length <= 3900);
   }
+  assert.ok(allEntities.some((entity) => entity.type === "bold"));
+  assert.ok(allEntities.some((entity) => entity.type === "pre"));
 });
 
 test("MessageBuffer sends a typing pulse while a run is pending", async () => {
@@ -58,15 +60,18 @@ test("MessageBuffer starts as starting and switches to working after turn start"
 
   await buffers.create("thread-phase:turn-1", { chatId: 1, messageThreadId: 2 });
   assert.match(sent[0]?.text ?? "", /Starting\.\.\./);
+  assert.ok(hasEntity(sent[0]?.options?.entities as Entity[] | undefined, sent[0]?.text ?? "", "bold", "Starting..."));
 
   buffers.markTurnStarted("thread-phase:turn-1");
   await delay(4);
 
-  assert.ok(edited.some((entry) => entry.text.includes("Working...")));
+  const working = edited.find((entry) => entry.text.includes("Working..."));
+  assert.ok(working);
+  assert.ok(hasEntity(working?.options?.entities as Entity[] | undefined, working?.text ?? "", "bold", "Working..."));
   await buffers.complete("thread-phase:turn-1", "done");
 });
 
-test("MessageBuffer renders structured working sections as Telegram HTML", async () => {
+test("MessageBuffer renders structured working sections as Telegram entities", async () => {
   const { bot, edited } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
 
@@ -80,16 +85,19 @@ test("MessageBuffer renders structured working sections as Telegram HTML", async
 
   await delay(4);
 
-  const latest = edited.at(-1)?.text ?? "";
-  assert.match(latest, /<b>Working\.\.\.<\/b>/);
-  assert.match(latest, /<b>Plan<\/b>/);
-  assert.match(latest, /<b>Reasoning<\/b>/);
-  assert.match(latest, /<blockquote>/);
-  assert.match(latest, /<b>Activity<\/b>/);
-  assert.match(latest, /<b>Reply Draft<\/b>/);
-  assert.match(latest, /<b>Draft<\/b>/);
-  assert.match(latest, /<b>Terminal<\/b>/);
-  assert.match(latest, /<pre><code>stderr line 1/);
+  const latest = edited.at(-1);
+  const text = latest?.text ?? "";
+  const entities = (latest?.options?.entities as Entity[] | undefined) ?? [];
+  assert.match(text, /Working\.\.\./);
+  assert.match(text, /Plan/);
+  assert.match(text, /Reasoning/);
+  assert.match(text, /Activity/);
+  assert.match(text, /Reply Draft/);
+  assert.match(text, /Draft/);
+  assert.match(text, /Terminal/);
+  assert.ok(entities.some((entity) => entity.type === "blockquote"));
+  assert.ok(entities.some((entity) => entity.type === "pre"));
+  assert.ok(entities.some((entity) => entity.type === "bold"));
 
   await buffers.complete("thread-structured:turn-1", "done");
 });
@@ -136,6 +144,7 @@ test("MessageBuffer.complete sends markdown image references as Telegram media",
     assert.equal(sentPhotos[0]?.messageThreadId, 2);
     assert.ok(sentPhotos[0]?.photo instanceof InputFile);
     assert.equal(sentPhotos[0]?.options?.caption, "Mockup");
+    assert.ok(((sentPhotos[0]?.options?.caption_entities as Array<{ type: string }> | undefined) ?? []).length === 0);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }
@@ -169,8 +178,8 @@ test("MessageBuffer.complete keeps image alt text when the final reply only cont
   }
 });
 
-test("MessageBuffer.complete does not send images outside the project root", async () => {
-  const { bot, edited, sentPhotos } = createFakeBot();
+test("MessageBuffer.complete degrades blocked images into fallback text instead of dropping them", async () => {
+  const { bot, edited, sent, sentPhotos } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
   const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-root-"));
   const externalRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-external-"));
@@ -192,14 +201,18 @@ test("MessageBuffer.complete does not send images outside the project root", asy
 
     assert.match(edited.at(-1)?.text ?? "", /Result below\./);
     assert.equal(sentPhotos.length, 0);
+    assert.ok(sent.some((message) => message.text.includes("Escaped")));
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
     rmSync(externalRoot, { recursive: true, force: true });
   }
 });
 
-function count(text: string, needle: string): number {
-  return text.split(needle).length - 1;
+type Entity = { type: string; offset: number; length: number };
+
+function hasEntity(entities: Entity[] | undefined, text: string, type: string, value: string): boolean {
+  const offset = text.indexOf(value);
+  return entities?.some((entity) => entity.type === type && entity.offset === offset && entity.length === value.length) ?? false;
 }
 
 function delay(ms: number): Promise<void> {

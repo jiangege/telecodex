@@ -1,8 +1,10 @@
-import { FormattedString, type TextWithEntities } from "@grammyjs/parse-mode";
 import type { Bot, Context } from "grammy";
+import type { MessageEntity } from "grammy/types";
 import type { Logger } from "../runtime/logger.js";
-import { retryTelegramCall } from "./delivery.js";
-import { TELEGRAM_SAFE_TEXT_LIMIT } from "./splitMessage.js";
+import { sendTextChunks } from "./delivery.js";
+import { renderTelegramSemanticText } from "./renderer.js";
+import type { RenderedTelegramText, TelegramInline, TelegramSemanticDoc } from "./semantic.js";
+import { semanticDoc, semanticParagraph, semanticText } from "./semantic.js";
 
 export type ReplyFieldValue = string | number | boolean | null | undefined;
 
@@ -15,14 +17,14 @@ export interface ReplyField {
 export interface ReplySection {
   title?: string;
   fields?: ReplyField[];
-  lines?: ReplyLine[];
+  lines?: string[];
 }
 
 export interface ReplyDocument {
   title: string;
   fields?: ReplyField[];
   sections?: ReplySection[];
-  footer?: ReplyLine | ReplyLine[];
+  footer?: string | string[];
 }
 
 export interface ReplyTarget {
@@ -30,8 +32,7 @@ export interface ReplyTarget {
   messageThreadId: number | null;
 }
 
-type ReplyLine = string | TextWithEntities;
-type ReplyContent = ReplyLine | ReplyLine[];
+type ReplyContent = string | string[] | RenderedTelegramText;
 
 export function textField(label: string, value: ReplyFieldValue): ReplyField {
   return {
@@ -49,32 +50,22 @@ export function codeField(label: string, value: ReplyFieldValue): ReplyField {
   };
 }
 
-export function renderReplyDocument(document: ReplyDocument): FormattedString {
-  const lines: ReplyLine[] = [formatTitle(document.title)];
-
-  if (document.fields?.length) {
-    lines.push(...document.fields.map(formatField));
-  }
+export function replyDocumentToTelegramSemanticDoc(document: ReplyDocument): TelegramSemanticDoc {
+  const blocks = [sectionBlock(document.title, document.fields)];
 
   for (const section of document.sections ?? []) {
-    appendBlankLine(lines);
-    if (section.title) {
-      lines.push(formatTitle(section.title));
-    }
-    if (section.fields?.length) {
-      lines.push(...section.fields.map(formatField));
-    }
-    if (section.lines?.length) {
-      lines.push(...section.lines);
-    }
+    blocks.push(sectionBlock(section.title, section.fields, section.lines));
   }
 
   if (document.footer != null) {
-    appendBlankLine(lines);
-    lines.push(...normalizeLines(document.footer));
+    blocks.push(semanticParagraph(normalizeLines(document.footer).join("\n")));
   }
 
-  return joinLines(trimBlankLines(lines));
+  return semanticDoc(blocks.filter((block) => block.content.length > 0));
+}
+
+export function renderReplyDocument(document: ReplyDocument): RenderedTelegramText {
+  return renderTelegramSemanticText(replyDocumentToTelegramSemanticDoc(document)) ?? { text: " " };
 }
 
 export async function replyDocument(ctx: Context, document: ReplyDocument): Promise<void> {
@@ -93,15 +84,15 @@ export async function sendReplyNotice(bot: Bot, target: ReplyTarget, content: Re
   await sendFormatted(bot, target, renderNotice(content), logger);
 }
 
-export async function replyError(ctx: Context, message: ReplyLine, detail?: ReplyContent): Promise<void> {
+export async function replyError(ctx: Context, message: string, detail?: string | string[]): Promise<void> {
   await replyNotice(ctx, detail == null ? message : [message, ...normalizeLines(detail)]);
 }
 
 export async function sendReplyError(
   bot: Bot,
   target: ReplyTarget,
-  message: ReplyLine,
-  detail?: ReplyContent,
+  message: string,
+  detail?: string | string[],
   logger?: Logger,
 ): Promise<void> {
   await sendReplyNotice(bot, target, detail == null ? message : [message, ...normalizeLines(detail)], logger);
@@ -115,10 +106,10 @@ export async function sendReplyUsage(bot: Bot, target: ReplyTarget, usage: strin
   await sendReplyNotice(bot, target, Array.isArray(usage) ? ["Usage:", ...usage] : `Usage: ${usage}`, logger);
 }
 
-export async function replyFormatted(ctx: Context, message: TextWithEntities): Promise<void> {
+export async function replyFormatted(ctx: Context, message: RenderedTelegramText): Promise<void> {
   const target = targetFromContext(ctx);
   if (target && typeof ctx.api?.sendMessage === "function") {
-    await sendFormattedViaApi(ctx.api, ctx.api, target, message);
+    await sendFormattedViaApi(ctx.api, target, message);
     return;
   }
   await ctx.reply(message.text, {
@@ -126,93 +117,38 @@ export async function replyFormatted(ctx: Context, message: TextWithEntities): P
   });
 }
 
-export async function sendFormatted(bot: Bot, target: ReplyTarget, message: TextWithEntities, logger?: Logger): Promise<void> {
-  await sendFormattedViaApi(bot.api, bot.api, target, message, logger);
+export async function sendFormatted(bot: Bot, target: ReplyTarget, message: RenderedTelegramText, logger?: Logger): Promise<void> {
+  await sendFormattedViaApi(bot.api, target, message, logger);
 }
 
-function renderNotice(content: ReplyContent): FormattedString {
-  return joinLines(trimBlankLines(normalizeLines(content)));
+function renderNotice(content: ReplyContent): RenderedTelegramText {
+  if (typeof content === "object" && content != null && "text" in content) {
+    return content;
+  }
+  return renderTelegramSemanticText(semanticDoc([semanticParagraph(normalizeLines(content).join("\n"))])) ?? { text: " " };
 }
 
-function toMessageOptions(message: TextWithEntities): {
-  entities?: NonNullable<TextWithEntities["entities"]>;
+function toMessageOptions(message: RenderedTelegramText): {
+  entities?: MessageEntity[];
   link_preview_options: { is_disabled: true };
 } {
   return {
-    ...(message.entities && message.entities.length > 0 ? { entities: message.entities } : {}),
+    ...(message.entities && message.entities.length > 0 ? { entities: message.entities as MessageEntity[] } : {}),
     link_preview_options: { is_disabled: true },
   };
 }
 
 async function sendFormattedViaApi(
   api: Pick<Bot["api"], "sendMessage">,
-  cooldownKey: object,
   target: ReplyTarget,
-  message: TextWithEntities,
+  message: RenderedTelegramText,
   logger?: Logger,
 ): Promise<void> {
-  for (const chunk of splitTextWithEntities(message)) {
-    await retryTelegramCall(
-      cooldownKey,
-      () =>
-        api.sendMessage(target.chatId, chunk.text, {
-          ...(target.messageThreadId == null ? {} : { message_thread_id: target.messageThreadId }),
-          ...toMessageOptions(chunk),
-        }),
-      logger,
-      "telegram send rate limited",
-      {
-        chatId: target.chatId,
-        messageThreadId: target.messageThreadId,
-      },
-    );
-  }
-}
-
-function splitTextWithEntities(message: TextWithEntities, limit = TELEGRAM_SAFE_TEXT_LIMIT): TextWithEntities[] {
-  if (message.text.length <= limit) {
-    return [message];
-  }
-
-  const chunks: TextWithEntities[] = [];
-  let start = 0;
-  while (start < message.text.length) {
-    const remaining = message.text.length - start;
-    const end = remaining <= limit
-      ? message.text.length
-      : start + chooseSplitPoint(message.text.slice(start, start + limit), limit);
-    chunks.push(sliceTextWithEntities(message, start, Math.max(start + 1, end)));
-    start = Math.max(start + 1, end);
-  }
-
-  return chunks;
-}
-
-function sliceTextWithEntities(message: TextWithEntities, start: number, end: number): TextWithEntities {
-  const text = message.text.slice(start, end);
-  const entities = message.entities?.flatMap((entity) => {
-    const overlapStart = Math.max(entity.offset, start);
-    const overlapEnd = Math.min(entity.offset + entity.length, end);
-    if (overlapStart >= overlapEnd) return [];
-    return [
-      {
-        ...entity,
-        offset: overlapStart - start,
-        length: overlapEnd - overlapStart,
-      },
-    ];
-  });
-
-  return entities && entities.length > 0
-    ? { text, entities }
-    : { text };
-}
-
-function chooseSplitPoint(text: string, limit: number): number {
-  if (text.length <= limit) return text.length;
-  const slice = text.slice(0, limit);
-  const splitAt = Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("\n"), slice.lastIndexOf(" "));
-  return splitAt > limit * 0.55 ? splitAt : limit;
+  await sendTextChunks({ api } as Bot, {
+    chatId: target.chatId,
+    messageThreadId: target.messageThreadId,
+    message,
+  }, logger);
 }
 
 function targetFromContext(ctx: Context): ReplyTarget | null {
@@ -224,37 +160,40 @@ function targetFromContext(ctx: Context): ReplyTarget | null {
   };
 }
 
-function formatTitle(value: string): FormattedString {
-  return FormattedString.bold(value);
+function sectionBlock(title?: string, fields?: ReplyField[], lines?: string[]) {
+  const content: TelegramInline[] = [];
+  if (title) {
+    content.push({ type: "bold", children: [semanticText(title)] });
+  }
+  for (const field of fields ?? []) {
+    appendLine(content, fieldLine(field));
+  }
+  for (const line of lines ?? []) {
+    appendLine(content, [semanticText(line)]);
+  }
+  return semanticParagraph(content);
 }
 
-function formatField(field: ReplyField): ReplyLine {
+function fieldLine(field: ReplyField): TelegramInline[] {
   const value = formatValue(field.value);
   if (field.style === "code") {
-    return FormattedString.join([`${field.label}: `, FormattedString.code(value)]);
+    return [
+      semanticText(`${field.label}: `),
+      { type: "code", text: value },
+    ];
   }
-  return `${field.label}: ${value}`;
+  return [semanticText(`${field.label}: ${value}`)];
 }
 
-function joinLines(lines: ReplyLine[]): FormattedString {
-  return FormattedString.join(lines, "\n");
+function appendLine(content: TelegramInline[], line: TelegramInline[]): void {
+  if (line.length === 0) return;
+  if (content.length > 0) {
+    content.push(semanticText("\n"));
+  }
+  content.push(...line);
 }
 
-function appendBlankLine(lines: ReplyLine[]): void {
-  if (lines.length === 0 || lines.at(-1) === "") return;
-  lines.push("");
-}
-
-function trimBlankLines(lines: ReplyLine[]): ReplyLine[] {
-  let start = 0;
-  let end = lines.length;
-
-  while (lines[start] === "") start += 1;
-  while (lines[end - 1] === "") end -= 1;
-  return lines.slice(start, end);
-}
-
-function normalizeLines(lines: ReplyLine | ReplyLine[]): ReplyLine[] {
+function normalizeLines(lines: string | string[]): string[] {
   return Array.isArray(lines) ? lines : [lines];
 }
 

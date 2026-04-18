@@ -1,23 +1,33 @@
 import type { Bot } from "grammy";
 import type { InlineKeyboardMarkup } from "grammy/types";
 import {
-  editHtmlMessage,
+  editTextMessage,
   isMessageNotModifiedError,
-  replaceOrSendHtmlChunks,
+  replaceOrSendTextChunks,
   type TelegramMediaScope,
   sendMediaMessage,
-  sendHtmlMessage,
+  sendTextChunks,
+  sendTextMessage,
   sendTypingAction,
   shouldFallbackToNewMessage,
+  splitRenderedText,
 } from "./delivery.js";
 import type { Logger } from "../runtime/logger.js";
 import {
-  escapeHtml,
-  renderMarkdownForTelegramContent,
-  renderMarkdownToTelegramHtml,
-  renderPlainChunksForTelegram,
+  renderMarkdownToTelegramMessage,
+  renderMarkdownToTelegramSemanticDoc,
+  renderPlainForTelegram,
+  renderTelegramSemanticText,
 } from "./renderer.js";
-import { splitTelegramHtml } from "./splitMessage.js";
+import {
+  type RenderedTelegramText,
+  type TelegramBlock,
+  type TelegramListItem,
+  semanticDoc,
+  semanticHeading,
+  semanticParagraph,
+  semanticText,
+} from "./semantic.js";
 
 const DEFAULT_ACTIVITY_PULSE_INTERVAL_MS = 4_000;
 const MAX_PENDING_EDIT_LENGTH = 3_800;
@@ -68,7 +78,7 @@ interface BufferState {
   timer: MessageBufferTimer | null;
   activityTimer: MessageBufferTimer | null;
   activityInFlight: boolean;
-  lastSentText: string;
+  lastSentSignature: string;
   queue: Promise<void>;
 }
 
@@ -98,12 +108,13 @@ export class MessageBuffer {
       this.states.delete(key);
     }
 
-    const message = await sendHtmlMessage(
+    const startingMessage = renderPendingMessage("starting");
+    const message = await sendTextMessage(
       this.bot,
       {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
-        text: "Starting...",
+        message: startingMessage,
         ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
       },
       this.logger,
@@ -122,7 +133,7 @@ export class MessageBuffer {
       timer: null,
       activityTimer: null,
       activityInFlight: false,
-      lastSentText: "",
+      lastSentSignature: signatureOf(startingMessage, input.replyMarkup),
       queue: Promise.resolve(),
     };
     this.states.set(key, state);
@@ -182,7 +193,7 @@ export class MessageBuffer {
   setToolOutput(key: string, text: string): void {
     const state = this.states.get(key);
     if (!state) return;
-    state.toolOutputText = truncateTail(text.replace(/\r/g, "").trim(), 2000);
+    state.toolOutputText = truncateTail(text.replace(/\r/g, "").trim(), 2_000);
     this.scheduleFlush(key, state);
   }
 
@@ -211,45 +222,68 @@ export class MessageBuffer {
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
-      const rendered = text ? renderMarkdownForTelegramContent(text) : null;
+      const rendered = text ? renderMarkdownToTelegramMessage(text) : { body: null, media: [] };
       if (options?.clearReplyMarkup !== false) {
         state.replyMarkup = null;
       }
-      const chunks =
-        rendered?.chunks.length
-          ? rendered.chunks
-          : renderPlainChunksForTelegram("Codex finished, but returned no text to send.");
-      await this.replaceWithChunks(state, chunks);
-      if (rendered?.media.length && options?.mediaScope) {
-        for (const media of rendered.media) {
-          try {
-            await sendMediaMessage(
+
+      const body = rendered.body ?? renderPlainForTelegram("Codex finished, but returned no text to send.");
+      await this.replaceWithChunks(state, splitRenderedText(body));
+
+      for (const media of rendered.media) {
+        if (!options?.mediaScope) {
+          this.logger?.warn("telegram media send skipped because no media scope was provided", {
+            chatId: state.chatId,
+            messageThreadId: state.messageThreadId,
+            source: media.source,
+          });
+          if (media.fallback) {
+            await sendTextChunks(
               this.bot,
               {
                 chatId: state.chatId,
                 messageThreadId: state.messageThreadId,
-                source: media.source,
-                altText: media.altText,
-                scope: options.mediaScope,
+                message: media.fallback,
               },
               this.logger,
             );
-          } catch (error) {
-            this.logger?.warn("telegram media send failed", {
+          }
+          continue;
+        }
+
+        try {
+          await sendMediaMessage(
+            this.bot,
+            {
               chatId: state.chatId,
               messageThreadId: state.messageThreadId,
               source: media.source,
-              message: error instanceof Error ? error.message : String(error),
-            });
+              ...(media.caption ? { caption: media.caption } : {}),
+              scope: options.mediaScope,
+            },
+            this.logger,
+          );
+        } catch (error) {
+          this.logger?.warn("telegram media send failed", {
+            chatId: state.chatId,
+            messageThreadId: state.messageThreadId,
+            source: media.source,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          if (media.fallback) {
+            await sendTextChunks(
+              this.bot,
+              {
+                chatId: state.chatId,
+                messageThreadId: state.messageThreadId,
+                message: media.fallback,
+              },
+              this.logger,
+            );
           }
         }
-      } else if (rendered?.media.length) {
-        this.logger?.warn("telegram media send skipped because no media scope was provided", {
-          chatId: state.chatId,
-          messageThreadId: state.messageThreadId,
-          mediaCount: rendered.media.length,
-        });
       }
+
       this.states.delete(key);
     });
   }
@@ -261,7 +295,7 @@ export class MessageBuffer {
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       state.replyMarkup = null;
-      await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex error: ${message}`));
+      await this.replaceWithChunks(state, [renderPlainForTelegram(`Codex error: ${message}`)]);
       this.states.delete(key);
     });
   }
@@ -272,9 +306,10 @@ export class MessageBuffer {
     await this.enqueue(state, async () => {
       const latest = this.states.get(key);
       if (!latest) return;
-      const text = composePendingHtml(latest);
-      if (text === latest.lastSentText) return;
-      await this.safeEdit(latest, text);
+      const message = composePendingMessage(latest);
+      const signature = signatureOf(message, latest.replyMarkup);
+      if (signature === latest.lastSentSignature) return;
+      await this.safeEdit(latest, message);
     });
   }
 
@@ -286,43 +321,47 @@ export class MessageBuffer {
     }, this.updateIntervalMs);
   }
 
-  private async safeEdit(state: BufferState, text: string): Promise<void> {
+  private async safeEdit(state: BufferState, message: RenderedTelegramText): Promise<void> {
     try {
-      await editHtmlMessage(this.bot, {
-        chatId: state.chatId,
-        messageId: state.messageId,
-        text,
-        ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
-      }, this.logger);
-      state.lastSentText = text;
+      await editTextMessage(
+        this.bot,
+        {
+          chatId: state.chatId,
+          messageId: state.messageId,
+          message,
+          ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
+        },
+        this.logger,
+      );
+      state.lastSentSignature = signatureOf(message, state.replyMarkup);
     } catch (error) {
       if (isMessageNotModifiedError(error)) {
-        state.lastSentText = text;
+        state.lastSentSignature = signatureOf(message, state.replyMarkup);
         return;
       }
       if (shouldFallbackToNewMessage(error)) {
-        const message = await sendHtmlMessage(
+        const sent = await sendTextMessage(
           this.bot,
           {
             chatId: state.chatId,
             messageThreadId: state.messageThreadId,
-            text,
+            message,
             ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
           },
           this.logger,
         );
-        state.messageId = message.message_id;
-        state.lastSentText = text;
+        state.messageId = sent.message_id;
+        state.lastSentSignature = signatureOf(message, state.replyMarkup);
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const failure = error instanceof Error ? error.message : String(error);
       this.logger?.warn("telegram edit failed", {
-        message,
+        message: failure,
         chatId: state.chatId,
         messageThreadId: state.messageThreadId,
         messageId: state.messageId,
       });
-      process.stderr.write(`[telegram edit failed] ${message}\n`);
+      process.stderr.write(`[telegram edit failed] ${failure}\n`);
     }
   }
 
@@ -365,8 +404,8 @@ export class MessageBuffer {
     }
   }
 
-  private async replaceWithChunks(state: BufferState, chunks: string[]): Promise<void> {
-    const messageId = await replaceOrSendHtmlChunks(
+  private async replaceWithChunks(state: BufferState, chunks: RenderedTelegramText[]): Promise<void> {
+    const messageId = await replaceOrSendTextChunks(
       this.bot,
       {
         chatId: state.chatId,
@@ -382,7 +421,7 @@ export class MessageBuffer {
     }
     const [first] = chunks;
     if (first) {
-      state.lastSentText = first;
+      state.lastSentSignature = signatureOf(first, state.replyMarkup);
     }
   }
 
@@ -401,46 +440,56 @@ function maybeUnref(timer: MessageBufferTimer): void {
   }
 }
 
-function composePendingHtml(state: BufferState): string {
-  const sections = [`<b>${escapeHtml(pendingBanner(state.phase))}</b>`];
+function renderPendingMessage(phase: BufferState["phase"]): RenderedTelegramText {
+  return renderTelegramSemanticText(semanticDoc([semanticHeading(pendingBanner(phase))])) ?? renderPlainForTelegram(pendingBanner(phase));
+}
 
-  const planSection = renderListSection("Plan", state.planText, {
+function composePendingMessage(state: BufferState): RenderedTelegramText {
+  const blocks: TelegramBlock[] = [semanticHeading(pendingBanner(state.phase))];
+
+  const planBlocks = renderListSection("Plan", state.planText, {
     maxLines: MAX_PLAN_LINES,
+    interpretTaskState: true,
   });
-  if (planSection) {
-    sections.push(planSection);
+  if (planBlocks.length > 0) {
+    blocks.push(...planBlocks);
   }
 
-  const reasoningSection = renderQuoteSection("Reasoning", state.reasoningSummaryText, MAX_REASONING_LENGTH);
-  if (reasoningSection) {
-    sections.push(reasoningSection);
+  const reasoningBlocks = renderQuoteSection("Reasoning", state.reasoningSummaryText, MAX_REASONING_LENGTH);
+  if (reasoningBlocks.length > 0) {
+    blocks.push(...reasoningBlocks);
   }
 
-  const progressSection = renderListSection("Activity", state.progressLines.join("\n"), {
+  const progressBlocks = renderListSection("Activity", state.progressLines.join("\n"), {
     maxLines: MAX_PROGRESS_LINES,
   });
-  if (progressSection) {
-    sections.push(progressSection);
+  if (progressBlocks.length > 0) {
+    blocks.push(...progressBlocks);
   }
 
-  const draftSection = renderDraftSection(state.text);
-  if (draftSection) {
-    sections.push(draftSection);
+  const draftBlocks = renderDraftSection(state.text);
+  if (draftBlocks.length > 0) {
+    blocks.push(...draftBlocks);
   }
 
-  const toolOutputSection = renderCodeSection("Terminal", state.toolOutputText, MAX_TOOL_OUTPUT_LENGTH);
-  if (toolOutputSection) {
-    sections.push(toolOutputSection);
+  const toolBlocks = renderCodeSection("Terminal", state.toolOutputText, MAX_TOOL_OUTPUT_LENGTH);
+  if (toolBlocks.length > 0) {
+    blocks.push(...toolBlocks);
   }
 
-  return takeFirstPendingChunk(
-    sections.join("\n\n"),
-    `<b>${escapeHtml(pendingBanner(state.phase))}</b>`,
-  );
+  return takeFirstPendingChunk(renderTelegramSemanticText(semanticDoc(blocks)) ?? renderPendingMessage(state.phase));
 }
 
 function pendingBanner(phase: BufferState["phase"]): string {
   return phase === "running" ? "Working..." : "Starting...";
+}
+
+function signatureOf(message: RenderedTelegramText, replyMarkup: InlineKeyboardMarkup | null | undefined): string {
+  return JSON.stringify({
+    text: message.text,
+    entities: message.entities ?? [],
+    replyMarkup,
+  });
 }
 
 function truncateTail(text: string, maxLength: number): string {
@@ -448,8 +497,8 @@ function truncateTail(text: string, maxLength: number): string {
   return text.slice(text.length - maxLength);
 }
 
-function takeFirstPendingChunk(html: string, fallback: string): string {
-  return splitTelegramHtml(html, MAX_PENDING_EDIT_LENGTH)[0] ?? fallback;
+function takeFirstPendingChunk(message: RenderedTelegramText): RenderedTelegramText {
+  return splitRenderedText(message, MAX_PENDING_EDIT_LENGTH)[0] ?? renderPlainForTelegram("Working...");
 }
 
 function renderListSection(
@@ -457,38 +506,81 @@ function renderListSection(
   text: string,
   options: {
     maxLines: number;
+    interpretTaskState?: boolean;
   },
-): string | null {
+): TelegramBlock[] {
   const lines = normalizeMultiline(text)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, options.maxLines);
-  if (lines.length === 0) return null;
+  if (lines.length === 0) return [];
 
-  return `<b>${escapeHtml(title)}</b>\n${lines.map((line) => `- ${escapeHtml(line)}`).join("\n")}`;
-}
-
-function renderQuoteSection(title: string, text: string, maxLength: number): string | null {
-  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
-  if (!normalized) return null;
-  return `<b>${escapeHtml(title)}</b>\n<blockquote>${escapeHtml(normalized)}</blockquote>`;
-}
-
-function renderCodeSection(title: string, text: string, maxLength: number): string | null {
-  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
-  if (!normalized) return null;
-  return `<b>${escapeHtml(title)}</b>\n<pre><code>${escapeHtml(normalized)}</code></pre>`;
-}
-
-function renderDraftSection(text: string): string | null {
-  const normalized = truncatePreview(normalizeMultiline(text), MAX_REPLY_DRAFT_LENGTH);
-  if (!normalized) return null;
+  const items = lines.map((line): TelegramListItem => {
+    const parsed = options.interpretTaskState ? parseTaskLine(line) : null;
+    if (parsed) return parsed;
+    return {
+      kind: "bullet",
+      depth: 0,
+      content: [semanticText(line)],
+    };
+  });
 
   return [
-    `<b>Reply Draft</b>`,
-    takeFirstPendingChunk(renderMarkdownToTelegramHtml(normalized), escapeHtml(normalized)),
-  ].join("\n");
+    semanticHeading(title, 2),
+    {
+      type: "list",
+      items,
+    },
+  ];
+}
+
+function parseTaskLine(line: string): TelegramListItem | null {
+  const match = line.match(/^\[(todo|doing|done|blocked)\]\s+(.*)$/i);
+  if (!match) return null;
+  const state = match[1]?.toLowerCase();
+  const content = match[2] ?? "";
+  if (!state || content.length === 0) return null;
+  return {
+    kind: "task",
+    depth: 0,
+    state: state as NonNullable<TelegramListItem["state"]>,
+    content: [semanticText(content)],
+  };
+}
+
+function renderQuoteSection(title: string, text: string, maxLength: number): TelegramBlock[] {
+  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
+  if (!normalized) return [];
+  return [
+    semanticHeading(title, 2),
+    {
+      type: "quote",
+      blocks: [semanticParagraph(normalized)],
+    },
+  ];
+}
+
+function renderCodeSection(title: string, text: string, maxLength: number): TelegramBlock[] {
+  const normalized = truncatePreview(normalizeMultiline(text), maxLength);
+  if (!normalized) return [];
+  return [
+    semanticHeading(title, 2),
+    {
+      type: "code_block",
+      code: normalized,
+    },
+  ];
+}
+
+function renderDraftSection(text: string): TelegramBlock[] {
+  const normalized = truncatePreview(normalizeMultiline(text), MAX_REPLY_DRAFT_LENGTH);
+  if (!normalized) return [];
+
+  return [
+    semanticHeading("Reply Draft", 2),
+    ...renderMarkdownToTelegramSemanticDoc(normalized).blocks,
+  ];
 }
 
 function normalizeMultiline(text: string): string {

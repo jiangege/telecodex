@@ -1,15 +1,16 @@
 import path from "node:path";
 import { GrammyError, HttpError, InputFile, type Bot } from "grammy";
-import type { InlineKeyboardMarkup } from "grammy/types";
+import type { InlineKeyboardMarkup, MessageEntity } from "grammy/types";
 import { assertProjectScopedFile } from "../pathScope.js";
 import type { Logger } from "../runtime/logger.js";
-import { renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
-import { splitTelegramHtml } from "./splitMessage.js";
+import type { RenderedTelegramCaption, RenderedTelegramText } from "./semantic.js";
+import { TELEGRAM_SAFE_TEXT_LIMIT } from "./splitMessage.js";
 
 const telegramCooldownByClient = new WeakMap<object, TelegramCooldownState>();
 const MAX_TELEGRAM_RETRY_ATTEMPTS = 5;
 const TELEGRAM_NETWORK_RETRY_BASE_MS = 100;
 const TELEGRAM_NETWORK_RETRY_MAX_MS = 1_000;
+const TELEGRAM_CAPTION_LIMIT = 1_024;
 const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
@@ -19,6 +20,7 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
 ]);
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export interface TelegramDeliveryRuntime {
   sleep: (ms: number) => Promise<void>;
@@ -28,7 +30,7 @@ export interface TelegramMediaMessageInput {
   chatId: number;
   messageThreadId: number | null;
   source: string;
-  altText?: string | null;
+  caption?: RenderedTelegramCaption | null;
   scope: TelegramMediaScope;
 }
 
@@ -39,6 +41,12 @@ export interface TelegramMediaScope {
 
 export interface TelegramReplyMarkupInput {
   replyMarkup?: InlineKeyboardMarkup | null | undefined;
+}
+
+export interface TelegramTextMessageInput {
+  chatId: number;
+  messageThreadId: number | null;
+  message: RenderedTelegramText;
 }
 
 function telegramReplyMarkup(replyMarkup: InlineKeyboardMarkup | null | undefined): { reply_markup?: InlineKeyboardMarkup } {
@@ -57,20 +65,18 @@ const defaultDeliveryRuntime: TelegramDeliveryRuntime = {
   sleep,
 };
 
-export async function sendHtmlMessage(
+export async function sendTextMessage(
   bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
+  input: TelegramTextMessageInput & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<{ message_id: number }> {
   return retryTelegramCall(
     bot.api,
     () =>
-      bot.api.sendMessage(input.chatId, input.text, {
+      bot.api.sendMessage(input.chatId, input.message.text, {
         ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-        ...telegramReplyMarkup(input.replyMarkup),
+        ...textMessageOptions(input.message, input.replyMarkup),
       }),
     logger,
     "telegram send retry scheduled",
@@ -84,28 +90,20 @@ export async function sendHtmlMessage(
   );
 }
 
-export async function sendHtmlChunks(
+export async function sendTextChunks(
   bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
+  input: TelegramTextMessageInput & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<Array<{ message_id: number }>> {
   const messages: Array<{ message_id: number }> = [];
-  for (const chunk of splitTelegramHtml(input.text)) {
-    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger, runtime));
-  }
-  return messages;
-}
+  const [first, ...rest] = splitRenderedText(input.message);
 
-export async function sendPlainChunks(
-  bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
-  logger?: Logger,
-  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
-): Promise<Array<{ message_id: number }>> {
-  const messages: Array<{ message_id: number }> = [];
-  for (const chunk of renderPlainChunksForTelegram(input.text)) {
-    messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger, runtime));
+  if (first) {
+    messages.push(await sendTextMessage(bot, { ...input, message: first }, logger, runtime));
+  }
+  for (const chunk of rest) {
+    messages.push(await sendTextMessage(bot, { ...input, message: chunk }, logger, runtime));
   }
   return messages;
 }
@@ -119,7 +117,7 @@ export async function sendMediaMessage(
   const attachment = new InputFile(resolveProjectScopedImagePath(input.source, input.scope));
   const options = {
     ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
-    ...captionOptions(input.altText),
+    ...captionOptions(input.caption),
   };
 
   return retryTelegramCall(
@@ -164,13 +162,13 @@ export async function sendTypingAction(
   );
 }
 
-export async function replaceOrSendHtmlChunks(
+export async function replaceOrSendTextChunks(
   bot: Bot,
   input: {
     chatId: number;
     messageThreadId: number | null;
     messageId: number | null;
-    chunks: string[];
+    chunks: RenderedTelegramText[];
   } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
@@ -182,12 +180,12 @@ export async function replaceOrSendHtmlChunks(
     let firstDelivered = false;
     if (input.messageId != null) {
       try {
-        await editHtmlMessage(
+        await editTextMessage(
           bot,
           {
             chatId: input.chatId,
             messageId: input.messageId,
-            text: first,
+            message: first,
             ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
           },
           logger,
@@ -209,12 +207,12 @@ export async function replaceOrSendHtmlChunks(
     }
 
     if (!firstDelivered) {
-      const message = await sendHtmlMessage(
+      const message = await sendTextMessage(
         bot,
         {
           chatId: input.chatId,
           messageThreadId: input.messageThreadId,
-          text: first,
+          message: first,
           ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
         },
         logger,
@@ -225,12 +223,12 @@ export async function replaceOrSendHtmlChunks(
   }
 
   for (const chunk of rest) {
-    await sendHtmlMessage(
+    await sendTextMessage(
       bot,
       {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
-        text: chunk,
+        message: chunk,
       },
       logger,
       runtime,
@@ -240,19 +238,17 @@ export async function replaceOrSendHtmlChunks(
   return firstMessageId ?? null;
 }
 
-export async function editHtmlMessage(
+export async function editTextMessage(
   bot: Bot,
-  input: { chatId: number; messageId: number; text: string } & TelegramReplyMarkupInput,
+  input: { chatId: number; messageId: number; message: RenderedTelegramText } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<void> {
   await retryTelegramCall(
     bot.api,
     () =>
-      bot.api.editMessageText(input.chatId, input.messageId, input.text, {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-        ...telegramReplyMarkup(input.replyMarkup),
+      bot.api.editMessageText(input.chatId, input.messageId, input.message.text, {
+        ...textMessageOptions(input.message, input.replyMarkup),
       }),
     logger,
     "telegram edit retry scheduled",
@@ -267,6 +263,33 @@ export async function editHtmlMessage(
   );
 }
 
+export function splitRenderedText(message: RenderedTelegramText, limit = TELEGRAM_SAFE_TEXT_LIMIT): RenderedTelegramText[] {
+  if (message.text.length <= limit) {
+    return [message];
+  }
+
+  const chunks: RenderedTelegramText[] = [];
+  let start = 0;
+  while (start < message.text.length) {
+    const remaining = message.text.length - start;
+    const rawEnd = remaining <= limit
+      ? message.text.length
+      : start + chooseSplitPoint(message.text.slice(start, start + limit), limit);
+    const end = normalizeChunkBoundary(message.text, start, Math.max(start + 1, rawEnd));
+    chunks.push(sliceRenderedText(message, start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+export function truncateRenderedText(message: RenderedTelegramText, limit: number): RenderedTelegramText {
+  if (message.text.length <= limit) {
+    return message;
+  }
+  const [chunk] = splitRenderedText(message, limit);
+  return chunk ?? sliceRenderedText(message, 0, limit);
+}
+
 export function isMessageNotModifiedError(error: unknown): boolean {
   return error instanceof GrammyError && descriptionOf(error)?.toLowerCase().includes("message is not modified") === true;
 }
@@ -276,6 +299,120 @@ export function shouldFallbackToNewMessage(error: unknown): boolean {
   const description = descriptionOf(error)?.toLowerCase();
   if (!description) return false;
   return description.includes("message to edit not found") || description.includes("message can't be edited");
+}
+
+function textMessageOptions(
+  message: RenderedTelegramText,
+  replyMarkup: InlineKeyboardMarkup | null | undefined,
+): {
+  entities?: MessageEntity[];
+  link_preview_options: { is_disabled: true };
+  reply_markup?: InlineKeyboardMarkup;
+} {
+  return {
+    ...(message.entities && message.entities.length > 0 ? { entities: message.entities as MessageEntity[] } : {}),
+    link_preview_options: { is_disabled: true },
+    ...telegramReplyMarkup(replyMarkup),
+  };
+}
+
+function sliceRenderedText(message: RenderedTelegramText, start: number, end: number): RenderedTelegramText {
+  const text = message.text.slice(start, end);
+  const entities = message.entities?.flatMap((entity) => {
+    const overlapStart = Math.max(entity.offset, start);
+    const overlapEnd = Math.min(entity.offset + entity.length, end);
+    if (overlapStart >= overlapEnd) return [];
+    return [
+      {
+        ...entity,
+        offset: overlapStart - start,
+        length: overlapEnd - overlapStart,
+      },
+    ];
+  });
+
+  return entities && entities.length > 0
+    ? { text, entities }
+    : { text };
+}
+
+function chooseSplitPoint(text: string, limit: number): number {
+  if (text.length <= limit) return text.length;
+  const slice = text.slice(0, limit);
+  const splitAt = Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("\n"), slice.lastIndexOf(" "));
+  return splitAt > limit * 0.55 ? splitAt : limit;
+}
+
+function normalizeChunkBoundary(text: string, start: number, end: number): number {
+  const clamped = Math.max(start + 1, Math.min(text.length, end));
+  if (clamped >= text.length) return text.length;
+
+  const safeBackward = previousGraphemeBoundary(text, clamped);
+  if (safeBackward > start) {
+    return safeBackward;
+  }
+
+  const safeForward = nextGraphemeBoundary(text, clamped);
+  if (safeForward > start) {
+    return Math.min(text.length, safeForward);
+  }
+
+  return clamped;
+}
+
+function previousGraphemeBoundary(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) return index;
+
+  let previous = 0;
+  for (const segment of GRAPHEME_SEGMENTER.segment(text)) {
+    if (segment.index === index) {
+      return index;
+    }
+    if (segment.index > index) {
+      return previous;
+    }
+    previous = segment.index;
+  }
+
+  return adjustCodePointBoundaryBackward(text, index);
+}
+
+function nextGraphemeBoundary(text: string, index: number): number {
+  if (index <= 0) return 0;
+  if (index >= text.length) return text.length;
+
+  for (const segment of GRAPHEME_SEGMENTER.segment(text)) {
+    if (segment.index === index) {
+      return index;
+    }
+    if (segment.index > index) {
+      return segment.index;
+    }
+  }
+
+  return adjustCodePointBoundaryForward(text, index);
+}
+
+function adjustCodePointBoundaryBackward(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) return index;
+  return isGraphemeUnsafeBoundary(text, index) ? index - 1 : index;
+}
+
+function adjustCodePointBoundaryForward(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) return index;
+  return isGraphemeUnsafeBoundary(text, index) ? index + 1 : index;
+}
+
+function isGraphemeUnsafeBoundary(text: string, index: number): boolean {
+  return isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index));
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 const PROJECT_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
@@ -299,17 +436,19 @@ function resolveProjectScopedImagePath(source: string, scope: TelegramMediaScope
   return filePath;
 }
 
-function captionOptions(altText: string | null | undefined): { caption?: string; parse_mode?: "HTML" } {
-  const normalized = altText?.trim();
-  if (!normalized) return {};
+function captionOptions(caption: RenderedTelegramCaption | null | undefined): { caption?: string; caption_entities?: MessageEntity[] } {
+  if (!caption) return {};
+  const truncated = truncateRenderedText(
+    {
+      text: caption.caption,
+      ...(caption.caption_entities && caption.caption_entities.length > 0 ? { entities: caption.caption_entities } : {}),
+    },
+    TELEGRAM_CAPTION_LIMIT,
+  );
   return {
-    caption: renderPlainForTelegram(truncateCaption(normalized)),
-    parse_mode: "HTML",
+    caption: truncated.text,
+    ...(truncated.entities && truncated.entities.length > 0 ? { caption_entities: truncated.entities as MessageEntity[] } : {}),
   };
-}
-
-function truncateCaption(value: string): string {
-  return value.length <= 1024 ? value : `${value.slice(0, 1021)}...`;
 }
 
 function retryAfterMs(error: unknown): number | null {
@@ -359,122 +498,76 @@ function isRetryableNetworkCause(error: unknown): boolean {
     return false;
   }
 
-  const code = readErrorCode(error);
-  if (code && RETRYABLE_NETWORK_ERROR_CODES.has(code)) {
-    return true;
-  }
-
-  const message = readErrorMessage(error);
-  if (!message) return false;
-
-  return (
-    message.includes("socket hang up") ||
-    message.includes("connection reset") ||
-    message.includes("network request failed") ||
-    message.includes("fetch failed") ||
-    message.includes("timed out") ||
-    message.includes("timeout")
-  );
-}
-
-function readErrorCode(error: unknown): string | null {
-  if (typeof error !== "object" || error == null || !("code" in error)) return null;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" && code ? code : null;
-}
-
-function readErrorMessage(error: unknown): string | null {
   if (error instanceof Error) {
-    return error.message.toLowerCase();
+    return RETRYABLE_NETWORK_ERROR_CODES.has(String((error as Error & { code?: string }).code ?? ""));
   }
-  if (typeof error === "string") {
-    return error.toLowerCase();
+
+  if (typeof error === "object" && error != null && "code" in error) {
+    return RETRYABLE_NETWORK_ERROR_CODES.has(String((error as { code?: unknown }).code ?? ""));
   }
-  return null;
+
+  return false;
 }
 
 export async function retryTelegramCall<T>(
   cooldownKey: object,
-  operation: () => Promise<T>,
-  logger: Logger | undefined,
-  message: string,
-  context: Record<string, unknown>,
+  callback: () => Promise<T>,
+  logger?: Logger,
+  logMessage = "telegram retry scheduled",
+  fields?: Record<string, unknown>,
   options?: {
     allowNetworkRetry?: boolean;
     runtime?: TelegramDeliveryRuntime;
   },
 ): Promise<T> {
+  const runtime = options?.runtime ?? defaultDeliveryRuntime;
+
   for (let attempt = 0; ; attempt += 1) {
-    await waitForTelegramCooldown(cooldownKey);
+    const cooldown = telegramCooldownByClient.get(cooldownKey)?.cooldown ?? null;
+    if (cooldown != null && cooldown > Date.now()) {
+      await runtime.sleep(Math.max(0, cooldown - Date.now()));
+    }
+
     try {
-      return await operation();
+      return await callback();
     } catch (error) {
-      const rateLimitDelayMs = retryAfterMs(error);
-      const retry =
-        options?.allowNetworkRetry === true
-          ? retryPlan(error, attempt)
-          : rateLimitDelayMs == null
-            ? null
-            : {
-                kind: "rate-limit" as const,
-                delayMs: rateLimitDelayMs + 250,
-              };
-      if (retry == null || attempt >= MAX_TELEGRAM_RETRY_ATTEMPTS) {
+      const plan = retryPlan(error, attempt);
+      if (!plan) throw error;
+      if (plan.kind === "network" && options?.allowNetworkRetry !== true) {
         throw error;
       }
-      logger?.warn(message, {
-        ...context,
+      if (attempt + 1 >= MAX_TELEGRAM_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      const waitUntil = Date.now() + plan.delayMs;
+      applyBotCooldown(cooldownKey, waitUntil);
+      logger?.warn(logMessage, {
+        ...(fields ?? {}),
         attempt: attempt + 1,
-        retryKind: retry.kind,
-        retryDelayMs: retry.delayMs,
-        error,
+        delayMs: plan.delayMs,
+        retryKind: plan.kind,
+        error: error instanceof Error ? error.message : String(error),
       });
-      await applyTelegramCooldown(cooldownKey, retry.delayMs, options?.runtime ?? defaultDeliveryRuntime);
+      await runtime.sleep(plan.delayMs);
     }
   }
-}
-
-async function waitForTelegramCooldown(cooldownKey: object): Promise<void> {
-  for (;;) {
-    const cooldown = telegramCooldownByClient.get(cooldownKey)?.cooldown ?? null;
-    if (!cooldown) return;
-    await cooldown;
-  }
-}
-
-async function applyTelegramCooldown(
-  cooldownKey: object,
-  delayMs: number,
-  runtime: TelegramDeliveryRuntime,
-): Promise<void> {
-  const state = getTelegramCooldownState(cooldownKey);
-  const previous = state.cooldown;
-  const baseCooldown = previous
-    ? previous.then(() => runtime.sleep(delayMs))
-    : runtime.sleep(delayMs);
-  const cooldown = baseCooldown.finally(() => {
-    if (state.cooldown === cooldown) {
-      state.cooldown = null;
-    }
-  });
-  state.cooldown = cooldown;
-  await state.cooldown;
-}
-
-function getTelegramCooldownState(cooldownKey: object): TelegramCooldownState {
-  let state = telegramCooldownByClient.get(cooldownKey);
-  if (state) return state;
-  state = {
-    cooldown: null,
-  };
-  telegramCooldownByClient.set(cooldownKey, state);
-  return state;
 }
 
 interface TelegramCooldownState {
-  cooldown: Promise<void> | null;
+  cooldown: number | null;
+}
+
+function applyBotCooldown(cooldownKey: object, cooldown: number): void {
+  let state = telegramCooldownByClient.get(cooldownKey);
+  if (!state) {
+    state = { cooldown: null };
+  }
+  state.cooldown = cooldown;
+  telegramCooldownByClient.set(cooldownKey, state);
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

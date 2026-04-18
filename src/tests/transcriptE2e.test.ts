@@ -45,21 +45,29 @@ test("transcript e2e runs a topic message through preparing, working, and final 
 
     await harness.waitFor(() =>
       [...harness.editMessageTextCalls, ...harness.sendMessageCalls].some((call) =>
-        String(call.payload.text).includes("<code>thread-transcript-1</code>")
+        String(call.payload.text).includes("thread-transcript-1")
       ),
     );
     await harness.waitFor(() =>
       harness.editMessageTextCalls.some((call) =>
-        String(call.payload.text).includes("<code>thread-transcript-1</code>") &&
+        String(call.payload.text).includes("thread-transcript-1") &&
         JSON.stringify(call.payload.reply_markup) === JSON.stringify({ inline_keyboard: [] })
       ),
     );
     const finalPayload = [
       ...harness.editMessageTextCalls.map((call) => call.payload),
       ...harness.sendMessageCalls.map((call) => call.payload),
-    ].reverse().find((payload) => String(payload.text).includes("<code>thread-transcript-1</code>"));
+    ].reverse().find((payload) => String(payload.text).includes("thread-transcript-1"));
     assert.ok(finalPayload);
-    assert.equal(finalPayload?.parse_mode, "HTML");
+    assert.equal(finalPayload?.parse_mode, undefined);
+    assert.ok(
+      hasEntity(
+        finalPayload?.entities as Entity[] | undefined,
+        String(finalPayload?.text ?? ""),
+        "code",
+        "thread-transcript-1",
+      ),
+    );
     assert.deepEqual(finalPayload?.reply_markup, { inline_keyboard: [] });
   } finally {
     await harness.cleanup();
@@ -85,15 +93,21 @@ test("transcript e2e keeps placeholder working drafts out of Telegram progress m
     await harness.sendGroupText("inspect the working placeholder", 308);
     await harness.waitFor(() =>
       harness.editMessageTextCalls.some((call) =>
-        String(call.payload.text).includes("<b>Reasoning</b>")
+        String(call.payload.text).includes("Reasoning")
       ),
     );
 
-    const workingPayload = harness.editMessageTextCalls
-      .map((call) => String(call.payload.text))
-      .find((text) => text.includes("<b>Reasoning</b>"));
+    const workingPayload = harness.editMessageTextCalls.find((call) => String(call.payload.text).includes("Reasoning"));
     assert.ok(workingPayload);
-    assert.doesNotMatch(workingPayload ?? "", /<b>Reply Draft<\/b>/);
+    assert.ok(
+      hasEntity(
+        workingPayload?.payload.entities as Entity[] | undefined,
+        String(workingPayload?.payload.text ?? ""),
+        "bold",
+        "Reasoning",
+      ),
+    );
+    assert.doesNotMatch(String(workingPayload?.payload.text ?? ""), /Reply Draft/);
 
     control.release();
     await harness.waitFor(() => harness.store.get("-1003940193016:308")?.runtimeStatus === "idle");
@@ -247,7 +261,7 @@ test("transcript e2e supports /thread resume and /thread new without creating Te
   }
 });
 
-test("transcript e2e splits long markdown final replies into valid Telegram HTML chunks", async () => {
+test("transcript e2e splits long markdown final replies into valid Telegram entity chunks", async () => {
   const harness = createScenarioHarness();
   const markdown = [
     "# Final",
@@ -277,14 +291,12 @@ test("transcript e2e splits long markdown final replies into valid Telegram HTML
     const finalChunks = [
       ...harness.editMessageTextCalls.filter((call) => call.payload.message_id != null && String(call.payload.text) !== "Starting..."),
       ...harness.sendMessageCalls.filter((call) => call.payload.message_thread_id === 305 && String(call.payload.text) !== "Starting..."),
-    ].map((call) => String(call.payload.text));
+    ].map((call) => call.payload);
 
     assert.ok(finalChunks.length > 1);
+    assert.ok(finalChunks.some((chunk) => ((chunk.entities as Entity[] | undefined) ?? []).length > 0));
     for (const chunk of finalChunks) {
-      assert.ok(chunk.length <= 3900);
-      assert.equal(count(chunk, "<b>"), count(chunk, "</b>"));
-      assert.equal(count(chunk, "<code>"), count(chunk, "</code>"));
-      assert.equal(count(chunk, "<pre>"), count(chunk, "</pre>"));
+      assert.ok(String(chunk.text).length <= 3900);
     }
   } finally {
     await harness.cleanup();
@@ -408,6 +420,9 @@ test("transcript e2e sanitizes upstream Codex HTML errors before sending them to
   }
 });
 
-function count(text: string, needle: string): number {
-  return text.split(needle).length - 1;
+type Entity = { type: string; offset: number; length: number };
+
+function hasEntity(entities: Entity[] | undefined, text: string, type: string, value: string): boolean {
+  const offset = text.indexOf(value);
+  return entities?.some((entity) => entity.type === type && entity.offset === offset && entity.length === value.length) ?? false;
 }
