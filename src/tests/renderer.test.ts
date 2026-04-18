@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderMarkdownForTelegram, renderMarkdownToTelegramHtml } from "../telegram/renderer.js";
+import {
+  renderMarkdownForTelegram,
+  renderMarkdownForTelegramContent,
+  renderMarkdownToTelegramHtml,
+} from "../telegram/renderer.js";
 
 test("renderMarkdownForTelegram escapes anchor attributes safely", () => {
   const rendered = renderMarkdownForTelegram('[link](https://example.com/?q="hello"&x=1)').join("");
@@ -37,4 +41,25 @@ test("renderMarkdownToTelegramHtml degrades wide tables into labeled rows", () =
   assert.match(rendered, /name: alpha/);
   assert.match(rendered, /note: this is a very long note/);
   assert.doesNotMatch(rendered, /<pre><code>/);
+});
+
+test("renderMarkdownForTelegramContent extracts markdown images for separate delivery", () => {
+  const rendered = renderMarkdownForTelegramContent(
+    "Here is the result.\n\n![Wireframe](/tmp/mockup.png)\n\nAnd a reference: ![Remote](https://example.com/ref.jpg)",
+  );
+
+  assert.deepEqual(rendered.media, [
+    {
+      source: "/tmp/mockup.png",
+      altText: "Wireframe",
+    },
+    {
+      source: "https://example.com/ref.jpg",
+      altText: "Remote",
+    },
+  ]);
+  assert.match(rendered.html, /Here is the result\./);
+  assert.match(rendered.html, /And a reference:/);
+  assert.doesNotMatch(rendered.html, /mockup\.png/);
+  assert.doesNotMatch(rendered.html, /ref\.jpg/);
 });

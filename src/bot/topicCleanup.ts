@@ -1,7 +1,7 @@
 import type { Bot } from "grammy";
 import { GrammyError } from "grammy";
 import type { Logger } from "../runtime/logger.js";
-import type { SessionStore } from "../store/sessions.js";
+import type { SessionStore } from "../store/sessionStore.js";
 import { sendTypingAction } from "../telegram/delivery.js";
 
 export interface TopicCleanupSummary {

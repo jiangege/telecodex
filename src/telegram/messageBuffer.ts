@@ -3,12 +3,19 @@ import {
   editHtmlMessage,
   isMessageNotModifiedError,
   replaceOrSendHtmlChunks,
+  type TelegramMediaScope,
+  sendMediaMessage,
   sendHtmlMessage,
   sendTypingAction,
   shouldFallbackToNewMessage,
 } from "./delivery.js";
 import type { Logger } from "../runtime/logger.js";
-import { escapeHtml, renderMarkdownForTelegram, renderMarkdownToTelegramHtml, renderPlainChunksForTelegram } from "./renderer.js";
+import {
+  escapeHtml,
+  renderMarkdownForTelegramContent,
+  renderMarkdownToTelegramHtml,
+  renderPlainChunksForTelegram,
+} from "./renderer.js";
 import { splitTelegramHtml } from "./splitMessage.js";
 
 const DEFAULT_ACTIVITY_PULSE_INTERVAL_MS = 4_000;
@@ -31,6 +38,10 @@ export interface MessageBufferScheduler {
 export interface MessageBufferOptions {
   activityPulseIntervalMs?: number;
   scheduler?: MessageBufferScheduler;
+}
+
+export interface MessageBufferCompletionOptions {
+  mediaScope?: TelegramMediaScope;
 }
 
 const defaultScheduler: MessageBufferScheduler = {
@@ -185,17 +196,49 @@ export class MessageBuffer {
     this.states.clear();
   }
 
-  async complete(key: string, finalMarkdown?: string): Promise<void> {
+  async complete(key: string, finalMarkdown?: string, options?: MessageBufferCompletionOptions): Promise<void> {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) this.scheduler.clearTimeout(state.timer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
-      const chunks = text
-        ? renderMarkdownForTelegram(text)
-        : renderPlainChunksForTelegram("Codex finished, but returned no text to send.");
+      const rendered = text ? renderMarkdownForTelegramContent(text) : null;
+      const chunks =
+        rendered?.chunks.length
+          ? rendered.chunks
+          : renderPlainChunksForTelegram("Codex finished, but returned no text to send.");
       await this.replaceWithChunks(state, chunks);
+      if (rendered?.media.length && options?.mediaScope) {
+        for (const media of rendered.media) {
+          try {
+            await sendMediaMessage(
+              this.bot,
+              {
+                chatId: state.chatId,
+                messageThreadId: state.messageThreadId,
+                source: media.source,
+                altText: media.altText,
+                scope: options.mediaScope,
+              },
+              this.logger,
+            );
+          } catch (error) {
+            this.logger?.warn("telegram media send failed", {
+              chatId: state.chatId,
+              messageThreadId: state.messageThreadId,
+              source: media.source,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      } else if (rendered?.media.length) {
+        this.logger?.warn("telegram media send skipped because no media scope was provided", {
+          chatId: state.chatId,
+          messageThreadId: state.messageThreadId,
+          mediaCount: rendered.media.length,
+        });
+      }
       this.states.delete(key);
     });
   }

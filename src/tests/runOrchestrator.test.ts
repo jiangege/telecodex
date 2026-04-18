@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
-import { handleUserText } from "../bot/inputService.js";
+import { handleUserText } from "../bot/run/runOrchestrator.js";
 import { createFakeBot, createNoopLogger, createTestStores } from "./helpers.js";
 
 function createConfigRuntime(events: ThreadEvent[], options?: { running?: boolean }) {
@@ -114,7 +114,8 @@ test("handleUserText sends a fixed busy notice when a session already has an act
     const result = await handleUserText({
       text: "follow up",
       session,
-      store,
+      sessions: store,
+      projects,
       codex: createConfigRuntime([], { running: true }) as never,
       buffers: new MessageBuffer(bot, 1, createNoopLogger()),
       bot,
@@ -155,7 +156,8 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
     const result = await handleUserText({
       text: "please help",
       session,
-      store,
+      sessions: store,
+      projects,
       codex: createConfigRuntime(events) as never,
       buffers: new MessageBuffer(bot, 1, createNoopLogger()),
       bot,
@@ -192,7 +194,8 @@ test("handleUserText stays preparing until the SDK emits turn.started", async ()
     const result = await handleUserText({
       text: "wait for sdk",
       session,
-      store,
+      sessions: store,
+      projects,
       codex: deferred.runtime as never,
       buffers: new MessageBuffer(bot, 1, createNoopLogger()),
       bot,

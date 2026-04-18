@@ -20,16 +20,16 @@ function createPrivateTextContext(userId: number, text: string) {
 }
 
 test("auth middleware claims the initial bootstrap binding code", async () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    store.issueBindingCode({
+    admin.issueBindingCode({
       code: "bind-123",
       mode: "bootstrap",
     });
 
     let boundUserId: number | null = null;
     const middleware = authMiddleware({
-      store,
+      admin,
       onAdminBound: (userId) => {
         boundUserId = userId;
       },
@@ -38,7 +38,7 @@ test("auth middleware claims the initial bootstrap binding code", async () => {
 
     await middleware(ctx as never, async () => undefined);
 
-    assert.equal(store.getAuthorizedUserId(), 101);
+    assert.equal(admin.getAuthorizedUserId(), 101);
     assert.equal(boundUserId, 101);
     assert.match(replies.at(-1) ?? "", /Admin binding succeeded/);
   } finally {
@@ -47,14 +47,14 @@ test("auth middleware claims the initial bootstrap binding code", async () => {
 });
 
 test("auth middleware invalidates the binding code after too many failed attempts", async () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    store.issueBindingCode({
+    admin.issueBindingCode({
       code: "bind-123",
       mode: "bootstrap",
     });
 
-    const middleware = authMiddleware({ store });
+    const middleware = authMiddleware({ admin });
     let finalReply = "";
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const { ctx, replies } = createPrivateTextContext(101, `wrong-${attempt}`);
@@ -62,7 +62,7 @@ test("auth middleware invalidates the binding code after too many failed attempt
       finalReply = replies.at(-1) ?? "";
     }
 
-    assert.equal(store.getBindingCodeState(), null);
+    assert.equal(admin.getBindingCodeState(), null);
     assert.match(finalReply, /attempt limit/i);
   } finally {
     cleanup();
@@ -70,21 +70,21 @@ test("auth middleware invalidates the binding code after too many failed attempt
 });
 
 test("auth middleware transfers control with an active rebind code", async () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    store.claimAuthorizedUserId(101);
-    store.issueBindingCode({
+    admin.claimAuthorizedUserId(101);
+    admin.issueBindingCode({
       code: "rebind-123",
       mode: "rebind",
       issuedByUserId: 101,
     });
 
-    const middleware = authMiddleware({ store });
+    const middleware = authMiddleware({ admin });
     const { ctx, replies } = createPrivateTextContext(202, "rebind-123");
 
     await middleware(ctx as never, async () => undefined);
 
-    assert.equal(store.getAuthorizedUserId(), 202);
+    assert.equal(admin.getAuthorizedUserId(), 202);
     assert.match(replies.at(-1) ?? "", /handoff succeeded/i);
   } finally {
     cleanup();

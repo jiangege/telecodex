@@ -3,34 +3,90 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CodexThreadCatalog, CodexThreadSummary } from "../codex/sessionCatalog.js";
 import type { Logger } from "../runtime/logger.js";
+import { AdminStore } from "../store/adminStore.js";
+import { AppStateStore } from "../store/appStateStore.js";
 import { FileStateStorage } from "../store/fileState.js";
-import { ProjectStore } from "../store/projects.js";
-import { SessionStore } from "../store/sessions.js";
+import { ProjectStore } from "../store/projectStore.js";
+import { SessionStore } from "../store/sessionStore.js";
+
+type TestStoreFacade = SessionStore & {
+  getAppState: (key: string) => string | null;
+  setAppState: (key: string, value: string) => void;
+  deleteAppState: (key: string) => void;
+  getAuthorizedUserId: () => number | null;
+  getBindingCodeState: AdminStore["getBindingCodeState"];
+  issueBindingCode: AdminStore["issueBindingCode"];
+  recordBindingCodeFailure: AdminStore["recordBindingCodeFailure"];
+  clearBindingCode: AdminStore["clearBindingCode"];
+  claimAuthorizedUserId: AdminStore["claimAuthorizedUserId"];
+  rebindAuthorizedUserId: AdminStore["rebindAuthorizedUserId"];
+  clearAuthorizedUserId: AdminStore["clearAuthorizedUserId"];
+};
 
 export function createTestSessionStore(): {
-  store: SessionStore;
+  store: TestStoreFacade;
+  sessions: SessionStore;
+  admin: AdminStore;
+  appState: AppStateStore;
   cleanup: () => void;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-test-"));
   const storage = new FileStateStorage(path.join(dir, "state"));
+  const sessions = new SessionStore(storage);
+  const admin = new AdminStore(storage);
+  const appState = new AppStateStore(storage);
+  const store = createLegacyTestStoreAlias(sessions, admin, appState);
   return {
-    store: new SessionStore(storage),
+    store,
+    sessions,
+    admin,
+    appState,
     cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }
 
 export function createTestStores(): {
-  store: SessionStore;
+  store: TestStoreFacade;
+  sessions: SessionStore;
+  admin: AdminStore;
+  appState: AppStateStore;
   projects: ProjectStore;
   cleanup: () => void;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-test-"));
   const storage = new FileStateStorage(path.join(dir, "state"));
+  const sessions = new SessionStore(storage);
+  const admin = new AdminStore(storage);
+  const appState = new AppStateStore(storage);
+  const store = createLegacyTestStoreAlias(sessions, admin, appState);
   return {
-    store: new SessionStore(storage),
+    store,
+    sessions,
+    admin,
+    appState,
     projects: new ProjectStore(storage),
     cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
+}
+
+function createLegacyTestStoreAlias(
+  sessions: SessionStore,
+  admin: AdminStore,
+  appState: AppStateStore,
+): TestStoreFacade {
+  const store = sessions as TestStoreFacade;
+  store.getAppState = appState.get.bind(appState);
+  store.setAppState = appState.set.bind(appState);
+  store.deleteAppState = appState.delete.bind(appState);
+  store.getAuthorizedUserId = admin.getAuthorizedUserId.bind(admin);
+  store.getBindingCodeState = admin.getBindingCodeState.bind(admin);
+  store.issueBindingCode = admin.issueBindingCode.bind(admin);
+  store.recordBindingCodeFailure = admin.recordBindingCodeFailure.bind(admin);
+  store.clearBindingCode = admin.clearBindingCode.bind(admin);
+  store.claimAuthorizedUserId = admin.claimAuthorizedUserId.bind(admin);
+  store.rebindAuthorizedUserId = admin.rebindAuthorizedUserId.bind(admin);
+  store.clearAuthorizedUserId = admin.clearAuthorizedUserId.bind(admin);
+  return store;
 }
 
 export function createNoopLogger(): Logger {
@@ -82,6 +138,18 @@ export function createFakeBot() {
     messageThreadId: number | null;
     options: Record<string, unknown> | null;
   }> = [];
+  const sentPhotos: Array<{
+    chatId: number;
+    photo: unknown;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
+  const sentDocuments: Array<{
+    chatId: number;
+    document: unknown;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const forumEdits: Array<{ chatId: number; messageThreadId: number; name: string }> = [];
@@ -100,6 +168,24 @@ export function createFakeBot() {
     async editMessageText(chatId: number, messageId: number, text: string) {
       edited.push({ chatId, messageId, text });
       return true;
+    },
+    async sendPhoto(chatId: number, photo: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
+      sentPhotos.push({
+        chatId,
+        photo,
+        messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
+      });
+      return { message_id: nextMessageId++ };
+    },
+    async sendDocument(chatId: number, document: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
+      sentDocuments.push({
+        chatId,
+        document,
+        messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
+      });
+      return { message_id: nextMessageId++ };
     },
     async sendChatAction(chatId: number, action: string, options?: { message_thread_id?: number | null }) {
       chatActions.push({
@@ -130,6 +216,8 @@ export function createFakeBot() {
     bot: bot as never,
     api,
     sent,
+    sentPhotos,
+    sentDocuments,
     edited,
     chatActions,
     forumEdits,
@@ -146,6 +234,18 @@ export function createFakeHandlerBot() {
     options: Record<string, unknown> | null;
   }> = [];
   const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
+  const sentPhotos: Array<{
+    chatId: number;
+    photo: unknown;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
+  const sentDocuments: Array<{
+    chatId: number;
+    document: unknown;
+    messageThreadId: number | null;
+    options: Record<string, unknown> | null;
+  }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const createdTopics: Array<{ chatId: number; name: string; messageThreadId: number }> = [];
   const botCommands: Array<{
@@ -168,6 +268,24 @@ export function createFakeHandlerBot() {
     async editMessageText(chatId: number, messageId: number, text: string) {
       edited.push({ chatId, messageId, text });
       return true;
+    },
+    async sendPhoto(chatId: number, photo: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
+      sentPhotos.push({
+        chatId,
+        photo,
+        messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
+      });
+      return { message_id: nextMessageId++ };
+    },
+    async sendDocument(chatId: number, document: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
+      sentDocuments.push({
+        chatId,
+        document,
+        messageThreadId: options?.message_thread_id ?? null,
+        options: options ?? null,
+      });
+      return { message_id: nextMessageId++ };
     },
     async sendChatAction(chatId: number, action: string, options?: { message_thread_id?: number | null }) {
       chatActions.push({
@@ -225,6 +343,8 @@ export function createFakeHandlerBot() {
     commands,
     events,
     sent,
+    sentPhotos,
+    sentDocuments,
     edited,
     chatActions,
     createdTopics,

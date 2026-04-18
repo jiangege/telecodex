@@ -1,5 +1,5 @@
 import { Entry } from "@napi-rs/keyring";
-import type { SessionStore } from "../store/sessions.js";
+import type { AppStateStore } from "../store/appStateStore.js";
 
 const SERVICE = "telecodex";
 const ACCOUNT = "telegram-bot-token";
@@ -12,7 +12,7 @@ export class SecretStore {
   private readonly entry = new Entry(SERVICE, ACCOUNT);
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly appState: AppStateStore,
     private readonly options?: { allowPlaintextFallback?: boolean },
   ) {}
 
@@ -26,13 +26,13 @@ export class SecretStore {
     if (!this.options?.allowPlaintextFallback) {
       return null;
     }
-    return this.store.getAppState(FALLBACK_KEY);
+    return this.appState.get(FALLBACK_KEY);
   }
 
   setTelegramBotToken(token: string): TokenStorageMode {
     try {
       this.entry.setPassword(token);
-      this.store.deleteAppState(FALLBACK_KEY);
+      this.appState.delete(FALLBACK_KEY);
       return "keyring";
     } catch {
       if (!this.options?.allowPlaintextFallback) {
@@ -43,7 +43,7 @@ export class SecretStore {
           ].join(" "),
         );
       }
-      this.store.setAppState(FALLBACK_KEY, token);
+      this.appState.set(FALLBACK_KEY, token);
       return "plaintext-fallback";
     }
   }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { FileStateStorage } from "../store/fileState.js";
-import { SessionStore } from "../store/sessions.js";
+import { SessionStore } from "../store/sessionStore.js";
 
 test("reloading the file-backed session store keeps durable topic state but clears runtime state", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-session-reload-"));

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
+import { InputFile } from "grammy";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeBot, createNoopLogger } from "./helpers.js";
 
@@ -104,6 +108,94 @@ test("MessageBuffer keeps typing active until the run completes", async () => {
   assert.ok(chatActions.length > pulseCount);
 
   await buffers.complete("thread-idle:turn-1", "done");
+});
+
+test("MessageBuffer.complete sends markdown image references as Telegram media", async () => {
+  const { bot, edited, sentPhotos } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
+  const imagePath = path.join(projectRoot, "mockup.png");
+  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  try {
+    await buffers.create("thread-media:turn-1", { chatId: 1, messageThreadId: 2 });
+    await buffers.complete(
+      "thread-media:turn-1",
+      `Result below.\n\n![Mockup](${imagePath})`,
+      {
+        mediaScope: {
+          projectRoot,
+          workingDirectory: projectRoot,
+        },
+      },
+    );
+
+    assert.match(edited.at(-1)?.text ?? "", /Result below\./);
+    assert.equal(sentPhotos.length, 1);
+    assert.equal(sentPhotos[0]?.chatId, 1);
+    assert.equal(sentPhotos[0]?.messageThreadId, 2);
+    assert.ok(sentPhotos[0]?.photo instanceof InputFile);
+    assert.equal(sentPhotos[0]?.options?.caption, "Mockup");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("MessageBuffer.complete keeps image alt text when the final reply only contains images", async () => {
+  const { bot, edited, sentPhotos } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
+  const imagePath = path.join(projectRoot, "concept.png");
+  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  try {
+    await buffers.create("thread-media-only:turn-1", { chatId: 1, messageThreadId: 2 });
+    await buffers.complete(
+      "thread-media-only:turn-1",
+      `![Generated concept](${imagePath})`,
+      {
+        mediaScope: {
+          projectRoot,
+          workingDirectory: projectRoot,
+        },
+      },
+    );
+
+    assert.match(edited.at(-1)?.text ?? "", /Generated concept/);
+    assert.equal(sentPhotos.length, 1);
+    assert.equal(sentPhotos[0]?.options?.caption, "Generated concept");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("MessageBuffer.complete does not send images outside the project root", async () => {
+  const { bot, edited, sentPhotos } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-root-"));
+  const externalRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-external-"));
+  const imagePath = path.join(externalRoot, "escaped.png");
+  writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  try {
+    await buffers.create("thread-media-blocked:turn-1", { chatId: 1, messageThreadId: 2 });
+    await buffers.complete(
+      "thread-media-blocked:turn-1",
+      `Result below.\n\n![Escaped](${imagePath})`,
+      {
+        mediaScope: {
+          projectRoot,
+          workingDirectory: projectRoot,
+        },
+      },
+    );
+
+    assert.match(edited.at(-1)?.text ?? "", /Result below\./);
+    assert.equal(sentPhotos.length, 0);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  }
 });
 
 function count(text: string, needle: string): number {

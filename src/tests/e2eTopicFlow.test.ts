@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../config.js";
 import { registerHandlers } from "../bot/registerHandlers.js";
-import { sessionBufferKey } from "../bot/sessionFlow.js";
+import { sessionBufferKey } from "../bot/sessionState.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createNoopLogger, createTestStores } from "./helpers.js";
 
@@ -157,8 +157,10 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -209,8 +211,10 @@ test("e2e topic flow ignores follow-up messages while the current run is active"
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -261,8 +265,10 @@ test("e2e topic flow resumes an existing thread id", async () => {
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -296,8 +302,10 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -337,8 +345,10 @@ test("e2e status recovers stale in-memory running state", async () => {
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -383,8 +393,10 @@ test("e2e stop clears stale typing state before reporting no active run", async 
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -427,8 +439,10 @@ test("e2e config commands feed the next SDK run profile", async () => {
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -515,8 +529,10 @@ test("e2e image messages are ignored with the same busy notice while a run is ac
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -556,8 +572,10 @@ test("e2e runs clear an invalid stored output schema and continue without it", a
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -594,8 +612,10 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
     registerHandlers({
       bot: harness.bot,
       config: harness.config,
-      store: harness.store,
+      sessions: harness.store,
       projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
       codex: codex as never,
       threadCatalog: harness.threadCatalog,
       buffers: harness.buffers,
@@ -656,7 +676,7 @@ function createHarness() {
     buffers,
     cleanup: async () => {
       buffers.dispose();
-      await stores.store.flush();
+      await stores.sessions.flush();
       stores.cleanup();
     },
   };

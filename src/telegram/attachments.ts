@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Bot } from "grammy";
 import type { AppConfig } from "../config.js";
 import { getAppHome } from "../runtime/appPaths.js";
-import type { StoredCodexInput } from "../store/sessions.js";
+import type { StoredCodexInput } from "../store/sessionStore.js";
 
 interface TelegramPhotoSize {
   file_id: string;

@@ -2,6 +2,11 @@ import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 import { splitTelegramHtml, splitTelegramText } from "./splitMessage.js";
 
+export interface TelegramMarkdownMedia {
+  source: string;
+  altText: string;
+}
+
 const md = new MarkdownIt({
   html: false,
   linkify: true,
@@ -22,7 +27,7 @@ function escapeHtmlAttribute(value: string): string {
 }
 
 export function renderMarkdownForTelegram(markdown: string): string[] {
-  return splitTelegramHtml(renderMarkdownToTelegramHtml(markdown));
+  return renderMarkdownForTelegramContent(markdown).chunks;
 }
 
 export function renderPlainForTelegram(text: string): string {
@@ -34,12 +39,26 @@ export function renderPlainChunksForTelegram(text: string): string[] {
 }
 
 export function renderMarkdownToTelegramHtml(markdown: string): string {
-  const tokens = md.parse(markdown, {});
-  const html = renderTokens(tokens).replace(/\n{3,}/g, "\n\n").trim();
-  return html || escapeHtml(markdown.trim() || " ");
+  return renderMarkdownForTelegramContent(markdown).html;
 }
 
-function renderTokens(tokens: Token[]): string {
+export function renderMarkdownForTelegramContent(markdown: string): {
+  html: string;
+  chunks: string[];
+  media: TelegramMarkdownMedia[];
+} {
+  const tokens = md.parse(markdown, {});
+  const media: TelegramMarkdownMedia[] = [];
+  const html = renderTokens(tokens, media).replace(/\n{3,}/g, "\n\n").trim();
+  const fallback = html || fallbackText(markdown, media);
+  return {
+    html: fallback,
+    chunks: splitTelegramHtml(fallback),
+    media,
+  };
+}
+
+function renderTokens(tokens: Token[], media?: TelegramMarkdownMedia[]): string {
   let out = "";
   const listStack: Array<{ kind: "ordered" | "bullet"; index: number }> = [];
   let pendingListPrefix: { indent: string; marker: string } | null = null;
@@ -82,7 +101,7 @@ function renderTokens(tokens: Token[]): string {
           out += `${pendingListPrefix.indent}${taskMarker ?? pendingListPrefix.marker}`;
           pendingListPrefix = null;
         }
-        out += renderInline(token.children ?? [], { stripLeadingTaskMarker: taskMarker != null });
+        out += renderInline(token.children ?? [], { stripLeadingTaskMarker: taskMarker != null }, media);
         break;
       }
       case "bullet_list_open":
@@ -154,7 +173,11 @@ function renderTokens(tokens: Token[]): string {
   }
 }
 
-function renderInline(tokens: Token[], options?: { stripLeadingTaskMarker?: boolean }): string {
+function renderInline(
+  tokens: Token[],
+  options?: { stripLeadingTaskMarker?: boolean },
+  media?: TelegramMarkdownMedia[],
+): string {
   let out = "";
   const linkStack: boolean[] = [];
   let stripLeadingTaskMarker = options?.stripLeadingTaskMarker === true;
@@ -205,6 +228,17 @@ function renderInline(tokens: Token[], options?: { stripLeadingTaskMarker?: bool
           out += "</a>";
         }
         break;
+      case "image": {
+        const source = token.attrGet("src")?.trim() ?? "";
+        const altText = renderInlinePlain(token.children ?? []).trim() || token.content.trim();
+        if (source) {
+          media?.push({
+            source,
+            altText,
+          });
+        }
+        break;
+      }
       case "softbreak":
       case "hardbreak":
         out += "\n";
@@ -213,7 +247,7 @@ function renderInline(tokens: Token[], options?: { stripLeadingTaskMarker?: bool
         out += escapeHtml(token.content);
         break;
       default:
-        if (token.children) out += renderInline(token.children);
+        if (token.children) out += renderInline(token.children, undefined, media);
         break;
     }
   }
@@ -261,6 +295,17 @@ function nextListPrefix(listStack: Array<{ kind: "ordered" | "bullet"; index: nu
     indent,
     marker,
   };
+}
+
+function fallbackText(markdown: string, media: TelegramMarkdownMedia[]): string {
+  if (media.length > 0) {
+    const altText = media
+      .map((entry) => entry.altText.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    return escapeHtml(altText || " ");
+  }
+  return escapeHtml(markdown.trim() || " ");
 }
 
 function extractTaskMarker(content: string): string | null {

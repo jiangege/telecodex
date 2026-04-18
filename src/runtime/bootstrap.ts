@@ -14,10 +14,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import { buildConfig, type AppConfig } from "../config.js";
+import { AdminStore, BINDING_CODE_MAX_ATTEMPTS } from "../store/adminStore.js";
+import { AppStateStore } from "../store/appStateStore.js";
 import { FileStateStorage } from "../store/fileState.js";
 import { migrateLegacySqliteState } from "../store/legacyMigration.js";
-import { ProjectStore } from "../store/projects.js";
-import { BINDING_CODE_MAX_ATTEMPTS, SessionStore } from "../store/sessions.js";
+import { ProjectStore } from "../store/projectStore.js";
+import { SessionStore } from "../store/sessionStore.js";
 import { getLegacyStateDbPath, getStateDir } from "./appPaths.js";
 import { generateBindingCode } from "./bindingCodes.js";
 import {
@@ -30,16 +32,20 @@ const MAC_CODEX_BIN = "/Applications/Codex.app/Contents/Resources/codex";
 
 export interface BootstrapResult {
   config: AppConfig;
-  store: SessionStore;
+  sessions: SessionStore;
   projects: ProjectStore;
+  admin: AdminStore;
+  appState: AppStateStore;
   bootstrapCode: string | null;
   botUsername: string | null;
 }
 
 export interface RuntimePersistence {
   storage: FileStateStorage;
-  store: SessionStore;
+  sessions: SessionStore;
   projects: ProjectStore;
+  admin: AdminStore;
+  appState: AppStateStore;
   secrets: SecretStore;
 }
 
@@ -52,9 +58,9 @@ export interface BootstrapBindingState {
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   intro("telecodex");
 
-  const { store, projects, secrets } = initializeRuntimePersistence();
+  const { sessions, projects, admin, appState, secrets } = initializeRuntimePersistence();
 
-  const codexBin = await ensureCodexBin(store);
+  const codexBin = await ensureCodexBin(appState);
   await ensureCodexLogin(codexBin);
 
   const { token, botUsername, storageMode } = await ensureTelegramBotToken(secrets);
@@ -68,7 +74,7 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     codexBin,
   });
 
-  const binding = resolveBootstrapBindingState(store);
+  const binding = resolveBootstrapBindingState(admin);
   const bootstrapCode = binding?.code ?? null;
   if (binding) {
     await showBootstrapBindingNote({
@@ -80,8 +86,10 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
 
   return {
     config,
-    store,
+    sessions,
     projects,
+    admin,
+    appState,
     bootstrapCode,
     botUsername,
   };
@@ -97,33 +105,39 @@ export function initializeRuntimePersistence(input?: {
     storage,
     legacyDbPath: getLegacyStateDbPath(),
   });
-  const store = new SessionStore(storage);
+
+  const appState = new AppStateStore(storage);
+  const admin = new AdminStore(storage);
+  const sessions = new SessionStore(storage);
   const projects = new ProjectStore(storage);
-  const secrets = new SecretStore(store, {
+  const secrets = new SecretStore(appState, {
     allowPlaintextFallback: input?.allowPlaintextFallback ?? process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
   });
+
   return {
     storage,
-    store,
+    sessions,
     projects,
+    admin,
+    appState,
     secrets,
   };
 }
 
 export function resolveBootstrapBindingState(
-  store: SessionStore,
+  admin: AdminStore,
   generateCode: () => string = () => generateBindingCode("bootstrap"),
 ): BootstrapBindingState | null {
-  if (store.getAuthorizedUserId() != null) {
-    if (store.getBindingCodeState()?.mode === "bootstrap") {
-      store.clearBindingCode();
+  if (admin.getAuthorizedUserId() != null) {
+    if (admin.getBindingCodeState()?.mode === "bootstrap") {
+      admin.clearBindingCode();
     }
     return null;
   }
 
-  let binding = store.getBindingCodeState();
+  let binding = admin.getBindingCodeState();
   if (!binding || binding.mode !== "bootstrap") {
-    binding = store.issueBindingCode({
+    binding = admin.issueBindingCode({
       code: generateCode(),
       mode: "bootstrap",
     });
@@ -200,12 +214,12 @@ async function validateTelegramBotToken(token: string): Promise<{ username: stri
   }
 }
 
-async function ensureCodexBin(store: SessionStore): Promise<string> {
-  const saved = store.getAppState("codex_bin");
+async function ensureCodexBin(appState: AppStateStore): Promise<string> {
+  const saved = appState.get("codex_bin");
   for (const candidate of [saved, MAC_CODEX_BIN, "codex"]) {
     if (!candidate) continue;
     if (isWorkingCodexBin(candidate)) {
-      store.setAppState("codex_bin", candidate);
+      appState.set("codex_bin", candidate);
       return candidate;
     }
   }
@@ -225,7 +239,7 @@ async function ensureCodexBin(store: SessionStore): Promise<string> {
       note("That path is not an executable Codex binary.", "Codex");
       continue;
     }
-    store.setAppState("codex_bin", candidate);
+    appState.set("codex_bin", candidate);
     return candidate;
   }
 }

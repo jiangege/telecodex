@@ -4,52 +4,52 @@ import { resolveBootstrapBindingState } from "../runtime/bootstrap.js";
 import { createTestSessionStore } from "./helpers.js";
 
 test("resolveBootstrapBindingState issues a bootstrap code when no admin is bound", () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    const binding = resolveBootstrapBindingState(store, () => "bind-new");
+    const binding = resolveBootstrapBindingState(admin, () => "bind-new");
     assert.deepEqual(binding, {
       code: "bind-new",
-      expiresAt: store.getBindingCodeState()?.expiresAt ?? "",
+      expiresAt: admin.getBindingCodeState()?.expiresAt ?? "",
       maxAttempts: 5,
     });
-    assert.equal(store.getBindingCodeState()?.code, "bind-new");
-    assert.equal(store.getBindingCodeState()?.mode, "bootstrap");
+    assert.equal(admin.getBindingCodeState()?.code, "bind-new");
+    assert.equal(admin.getBindingCodeState()?.mode, "bootstrap");
   } finally {
     cleanup();
   }
 });
 
 test("resolveBootstrapBindingState reuses an active bootstrap code", () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    store.issueBindingCode({
+    admin.issueBindingCode({
       code: "bind-existing",
       mode: "bootstrap",
     });
-    const binding = resolveBootstrapBindingState(store, () => "bind-new");
+    const binding = resolveBootstrapBindingState(admin, () => "bind-new");
     assert.equal(binding?.code, "bind-existing");
-    assert.equal(store.getBindingCodeState()?.code, "bind-existing");
+    assert.equal(admin.getBindingCodeState()?.code, "bind-existing");
   } finally {
     cleanup();
   }
 });
 
 test("resolveBootstrapBindingState clears stale bootstrap codes once an admin is bound", () => {
-  const { store, cleanup } = createTestSessionStore();
+  const { admin, cleanup } = createTestSessionStore();
   try {
-    store.issueBindingCode({
+    admin.issueBindingCode({
       code: "bind-stale",
       mode: "bootstrap",
     });
-    store.claimAuthorizedUserId(101);
-    store.issueBindingCode({
+    admin.claimAuthorizedUserId(101);
+    admin.issueBindingCode({
       code: "bind-stale-2",
       mode: "bootstrap",
     });
 
-    const binding = resolveBootstrapBindingState(store, () => "bind-new");
+    const binding = resolveBootstrapBindingState(admin, () => "bind-new");
     assert.equal(binding, null);
-    assert.equal(store.getBindingCodeState(), null);
+    assert.equal(admin.getBindingCodeState(), null);
   } finally {
     cleanup();
   }

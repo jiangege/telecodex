@@ -1,26 +1,28 @@
 import { presetFromProfile } from "../../config.js";
 import { generateBindingCode } from "../../runtime/bindingCodes.js";
 import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
-import { refreshSessionIfActiveTurnIsStale } from "../inputService.js";
-import type { BotHandlerDeps } from "../handlerDeps.js";
+import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
 import {
   contextLogFields,
-  formatHelpText,
-  formatPrivateStatus,
-  formatProjectStatus,
-  formatReasoningEffort,
   getProjectForContext,
   hasTopicContext,
   isPrivateChat,
   parseSubcommand,
   requireScopedSession,
-} from "../commandSupport.js";
-import { formatIsoTimestamp, sessionLogFields } from "../sessionFlow.js";
-import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
+} from "../commandContext.js";
+import {
+  formatHelpText,
+  formatPrivateStatus,
+  formatProjectStatus,
+  formatReasoningEffort,
+} from "../helpText.js";
+import type { BotHandlerDeps } from "../handlerDeps.js";
+import { refreshSessionIfActiveTurnIsStale } from "../run/staleRunRecovery.js";
+import { formatIsoTimestamp, sessionLogFields } from "../sessionState.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, store, projects, codex, buffers, logger } = deps;
+  const { bot, config, sessions, projects, admin, codex, buffers, logger } = deps;
 
   bot.command(["start", "help"], wrapUserFacingHandler("help", logger, async (ctx) => {
     await replyNotice(ctx, formatHelpText(ctx, projects));
@@ -32,14 +34,14 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    const authorizedUserId = store.getAuthorizedUserId();
+    const authorizedUserId = admin.getAuthorizedUserId();
     if (authorizedUserId == null) {
       await replyNotice(ctx, "Admin binding is not completed yet.");
       return;
     }
 
     const { command } = parseSubcommand(ctx.match.trim());
-    const binding = store.getBindingCodeState();
+    const binding = admin.getBindingCodeState();
     if (!command || command === "status") {
       await replyDocument(ctx, {
         title: "Admin status",
@@ -58,7 +60,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     }
 
     if (command === "rebind") {
-      const next = store.issueBindingCode({
+      const next = admin.issueBindingCode({
         code: generateBindingCode("rebind"),
         mode: "rebind",
         issuedByUserId: authorizedUserId,
@@ -80,7 +82,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         await replyNotice(ctx, "No pending admin handoff.");
         return;
       }
-      store.clearBindingCode();
+      admin.clearBindingCode();
       await replyNotice(ctx, "Cancelled the pending admin handoff.");
       return;
     }
@@ -90,7 +92,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
   bot.command("status", wrapUserFacingHandler("status", logger, async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await replyNotice(ctx, formatPrivateStatus(store, projects));
+      await replyNotice(ctx, formatPrivateStatus(admin, projects));
       return;
     }
 
@@ -105,10 +107,10 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
-    const latestSession = await refreshSessionIfActiveTurnIsStale(session, store, codex, buffers, bot, logger);
+    const latestSession = await refreshSessionIfActiveTurnIsStale(session, sessions, codex, buffers, bot, logger);
     const activeRun = codex.getActiveRun(latestSession.sessionKey);
 
     await replyDocument(ctx, {
@@ -140,10 +142,10 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
   }));
 
   bot.command("stop", wrapUserFacingHandler("stop", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
-    const latest = await refreshSessionIfActiveTurnIsStale(session, store, codex, buffers, bot, logger);
+    const latest = await refreshSessionIfActiveTurnIsStale(session, sessions, codex, buffers, bot, logger);
     if (!codex.isRunning(session.sessionKey)) {
       await replyNotice(ctx, "There is no active Codex SDK turn right now.");
       return;

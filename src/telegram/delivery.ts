@@ -1,6 +1,8 @@
-import { GrammyError, HttpError, type Bot } from "grammy";
+import path from "node:path";
+import { GrammyError, HttpError, InputFile, type Bot } from "grammy";
+import { assertProjectScopedFile } from "../pathScope.js";
 import type { Logger } from "../runtime/logger.js";
-import { renderPlainChunksForTelegram } from "./renderer.js";
+import { renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
 import { splitTelegramHtml } from "./splitMessage.js";
 
 const telegramCooldownByClient = new WeakMap<object, TelegramCooldownState>();
@@ -19,6 +21,19 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
 
 export interface TelegramDeliveryRuntime {
   sleep: (ms: number) => Promise<void>;
+}
+
+export interface TelegramMediaMessageInput {
+  chatId: number;
+  messageThreadId: number | null;
+  source: string;
+  altText?: string | null;
+  scope: TelegramMediaScope;
+}
+
+export interface TelegramMediaScope {
+  projectRoot: string;
+  workingDirectory?: string | null;
 }
 
 const defaultDeliveryRuntime: TelegramDeliveryRuntime = {
@@ -75,6 +90,35 @@ export async function sendPlainChunks(
     messages.push(await sendHtmlMessage(bot, { ...input, text: chunk }, logger, runtime));
   }
   return messages;
+}
+
+export async function sendMediaMessage(
+  bot: Bot,
+  input: TelegramMediaMessageInput,
+  logger?: Logger,
+  runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
+): Promise<{ message_id: number }> {
+  const attachment = new InputFile(resolveProjectScopedImagePath(input.source, input.scope));
+  const options = {
+    ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
+    ...captionOptions(input.altText),
+  };
+
+  return retryTelegramCall(
+    bot.api,
+    () => bot.api.sendPhoto(input.chatId, attachment, options),
+    logger,
+    "telegram media retry scheduled",
+    {
+      chatId: input.chatId,
+      messageThreadId: input.messageThreadId,
+      source: input.source,
+      projectRoot: input.scope.projectRoot,
+    },
+    {
+      runtime,
+    },
+  );
 }
 
 export async function sendTypingAction(
@@ -213,6 +257,40 @@ export function shouldFallbackToNewMessage(error: unknown): boolean {
   return description.includes("message to edit not found") || description.includes("message can't be edited");
 }
 
+const PROJECT_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+function resolveProjectScopedImagePath(source: string, scope: TelegramMediaScope): string {
+  const trimmed = source.trim();
+  if (!trimmed) {
+    throw new Error("Media source cannot be empty.");
+  }
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("file://")) {
+    throw new Error("Only project-scoped local image paths are allowed.");
+  }
+
+  const baseDirectory = scope.workingDirectory?.trim() ? path.resolve(scope.workingDirectory) : path.resolve(scope.projectRoot);
+  const candidate = path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDirectory, trimmed);
+  const filePath = assertProjectScopedFile(candidate, scope.projectRoot);
+  const extension = path.extname(filePath).toLowerCase();
+  if (!PROJECT_IMAGE_EXTENSIONS.has(extension)) {
+    throw new Error(`Only project-scoped image files can be sent: ${trimmed}`);
+  }
+  return filePath;
+}
+
+function captionOptions(altText: string | null | undefined): { caption?: string; parse_mode?: "HTML" } {
+  const normalized = altText?.trim();
+  if (!normalized) return {};
+  return {
+    caption: renderPlainForTelegram(truncateCaption(normalized)),
+    parse_mode: "HTML",
+  };
+}
+
+function truncateCaption(value: string): string {
+  return value.length <= 1024 ? value : `${value.slice(0, 1021)}...`;
+}
+
 function retryAfterMs(error: unknown): number | null {
   if (error instanceof GrammyError) {
     const retryAfter = error.parameters?.retry_after;
@@ -299,7 +377,7 @@ export async function retryTelegramCall<T>(
   operation: () => Promise<T>,
   logger: Logger | undefined,
   message: string,
-  context: Record<string, number | null>,
+  context: Record<string, unknown>,
   options?: {
     allowNetworkRetry?: boolean;
     runtime?: TelegramDeliveryRuntime;

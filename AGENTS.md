@@ -39,9 +39,39 @@
 - Runtime state and active output message ids are in-memory only.
 - Legacy SQLite exists only as a one-time migration source and should not be reintroduced as the normal runtime store.
 
+## Code Organization
+
+- Keep the top-level source layout stable:
+  - `src/bot`: bot wiring plus shared bot-side helpers.
+  - `src/bot/handlers`: Telegram command and message entrypoints only.
+  - `src/bot/run`: Codex run orchestration, SDK event projection, and stale-run recovery.
+  - `src/codex`: Codex SDK adapters and session catalog integration.
+  - `src/runtime`: process bootstrap, locks, logging, and shutdown behavior.
+  - `src/store`: durable state access, split by domain.
+  - `src/telegram`: Telegram rendering, delivery, and streaming buffer behavior.
+  - `src/tests`: black-box and unit tests; `src/tests/harness` for shared test scaffolding only.
+- Keep handlers thin. They should parse Telegram context, enforce chat/topic constraints, and delegate to focused helpers.
+- Keep run lifecycle logic out of command handlers. Streaming state transitions and SDK event projection belong under `src/bot/run`.
+- Keep store modules domain-specific:
+  - `sessionStore` owns topic session state.
+  - `projectStore` owns supergroup-to-project bindings.
+  - `adminStore` owns admin binding and handoff state.
+  - `appStateStore` owns small global app state values.
+- Do not collapse unrelated state back into a single catch-all store.
+- Do not create umbrella utility buckets when the real boundary is already known.
+
+## Naming Guidance
+
+- Prefer names that describe one concrete responsibility, such as `threadHandlers`, `runOrchestrator`, `replyDocument`, `sessionStore`, and `topicSession`.
+- Avoid vague bucket names such as `commandSupport`, `inputService`, `formatted`, `sessions`, or `projects` when the file actually has a narrower role.
+- If a file starts mixing unrelated concerns, split it by boundary instead of hiding the problem behind a more generic name.
+- Test filenames should track the current module or behavior name. Do not leave historical names in place after a refactor.
+
 ## Implementation Guidance
 
 - Prefer a simple Telegram contract over trying to replicate every Codex Desktop behavior.
 - Keep the UI message-driven. Do not reintroduce pin-based live state.
 - Preserve the boundary between durable state and runtime state.
 - Treat inbound Telegram images as supported Codex input, but do not assume there is a native SDK-level inline image output channel.
+- Assistant-generated file and image output sent back to Telegram must stay scoped to the bound project root. Do not turn telecodex into a general file exfiltration path.
+- Prefer direct composition over extra wrapper layers. Add a new abstraction only when it removes real duplication or protects a real boundary.

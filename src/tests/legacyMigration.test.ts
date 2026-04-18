@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { AdminStore } from "../store/adminStore.js";
+import { AppStateStore } from "../store/appStateStore.js";
 import { FileStateStorage } from "../store/fileState.js";
 import { migrateLegacySqliteState } from "../store/legacyMigration.js";
-import { ProjectStore } from "../store/projects.js";
-import { SessionStore } from "../store/sessions.js";
+import { ProjectStore } from "../store/projectStore.js";
+import { SessionStore } from "../store/sessionStore.js";
 
 test("legacy SQLite state migrates into file-backed state without importing runtime or queue state", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-db-test-"));
@@ -136,10 +138,12 @@ test("legacy SQLite state migrates into file-backed state without importing runt
     assert.equal(result.imported, true);
 
     const store = new SessionStore(storage);
+    const admin = new AdminStore(storage);
+    const appState = new AppStateStore(storage);
     const projects = new ProjectStore(storage);
 
-    assert.equal(store.getAuthorizedUserId(), 101);
-    assert.equal(store.getAppState("codex_bin"), "/usr/local/bin/codex");
+    assert.equal(admin.getAuthorizedUserId(), 101);
+    assert.equal(appState.get("codex_bin"), "/usr/local/bin/codex");
     assert.equal(projects.get("-100")?.cwd, "/repo/app");
 
     const session = store.get("-100:7");
@@ -274,9 +278,11 @@ test("legacy SQLite import is additive and does not overwrite existing file-back
     assert.equal(result.imported, true);
 
     const store = new SessionStore(storage);
+    const admin = new AdminStore(storage);
+    const appState = new AppStateStore(storage);
     const projects = new ProjectStore(storage);
-    assert.equal(store.getAuthorizedUserId(), 202);
-    assert.equal(store.getAppState("codex_config_overrides"), '{"model_verbosity":"high"}');
+    assert.equal(admin.getAuthorizedUserId(), 202);
+    assert.equal(appState.get("codex_config_overrides"), '{"model_verbosity":"high"}');
     assert.equal(projects.get("-100")?.cwd, "/current/project");
     assert.equal(store.get("-100:9")?.codexThreadId, "thread-current");
   } finally {

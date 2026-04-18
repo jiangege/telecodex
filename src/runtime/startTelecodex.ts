@@ -1,5 +1,5 @@
 import { run } from "@grammyjs/runner";
-import { createBot } from "../bot/createBot.js";
+import { createBot } from "../bot/wireBot.js";
 import { tryParseCodexConfigOverrides } from "../codex/configOverrides.js";
 import { CodexSessionCatalog } from "../codex/sessionCatalog.js";
 import { CodexSdkRuntime } from "../codex/sdkRuntime.js";
@@ -28,15 +28,16 @@ export async function startTelecodex(): Promise<void> {
       pid: process.pid,
     });
 
-    const { config, store, projects, bootstrapCode, botUsername } = await bootstrapRuntime();
-    const storedConfigOverrides = store.getAppState("codex_config_overrides");
+    const { config, sessions, projects, admin, appState, bootstrapCode, botUsername } = await bootstrapRuntime();
+    const storedConfigOverrides = appState.get("codex_config_overrides");
     const { value: configOverrides, error: configOverridesError } = tryParseCodexConfigOverrides(storedConfigOverrides);
     if (configOverridesError) {
-      store.deleteAppState("codex_config_overrides");
+      appState.delete("codex_config_overrides");
       logger.warn("cleared invalid stored codex config overrides", {
         error: configOverridesError.message,
       });
     }
+
     const codex = new CodexSdkRuntime({
       codexBin: config.codexBin,
       logger: logger.child("codex-sdk"),
@@ -47,11 +48,12 @@ export async function startTelecodex(): Promise<void> {
     });
     const bot = createBot({
       config,
-      store,
+      sessions,
       projects,
+      admin,
+      appState,
       codex,
       threadCatalog,
-      bootstrapCode,
       logger: logger.child("bot"),
       onAdminBound: () => {
         logger.info("telegram admin bound");
@@ -59,6 +61,7 @@ export async function startTelecodex(): Promise<void> {
         console.log("telecodex is now ready to accept commands from the bound Telegram account");
       },
     });
+
     const botProfile = await bot.api.getMe();
     if (!botProfile.can_read_all_group_messages) {
       logger.warn("telegram bot privacy mode is enabled; plain topic messages will not reach telecodex", {
@@ -80,7 +83,7 @@ export async function startTelecodex(): Promise<void> {
         codex.interruptAll();
         runner.stop();
         try {
-          await store.flush();
+          await sessions.flush();
         } catch (error) {
           logger.warn("failed to flush pending telecodex state during shutdown", { error });
         }
@@ -103,7 +106,7 @@ export async function startTelecodex(): Promise<void> {
       console.log("waiting for admin binding from Telegram private chat...");
       console.log("bootstrap code was shown during setup and copied to the clipboard when possible");
     } else {
-      console.log(`authorized telegram user id: ${store.getAuthorizedUserId()}`);
+      console.log(`authorized telegram user id: ${admin.getAuthorizedUserId()}`);
     }
 
     logger.info("telecodex started", {
@@ -111,7 +114,7 @@ export async function startTelecodex(): Promise<void> {
       workspace: config.defaultCwd,
       codexBin: config.codexBin,
       bootstrapPending: bootstrapCode != null,
-      authorizedUserId: store.getAuthorizedUserId(),
+      authorizedUserId: admin.getAuthorizedUserId(),
     });
   } catch (error) {
     instanceLock?.release();

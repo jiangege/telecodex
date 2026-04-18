@@ -21,8 +21,10 @@ test("registerHandlers wires the SDK-first command and message entrypoints", () 
   registerHandlers({
     bot: bot as never,
     config: {} as never,
-    store: {} as never,
+    sessions: {} as never,
     projects: {} as never,
+    admin: {} as never,
+    appState: {} as never,
     codex: {} as never,
     threadCatalog: createFakeThreadCatalog(),
     buffers: {} as never,

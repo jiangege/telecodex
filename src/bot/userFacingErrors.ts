@@ -1,7 +1,7 @@
 import { GrammyError, HttpError, type Context } from "grammy";
 import type { Logger } from "../runtime/logger.js";
-import { replyError } from "../telegram/formatted.js";
-import { contextLogFields } from "./commandSupport.js";
+import { replyError } from "../telegram/replyDocument.js";
+import { contextLogFields } from "./commandContext.js";
 
 type UserFacingHandler<TContext extends Context = Context> = (ctx: TContext) => Promise<void>;
 

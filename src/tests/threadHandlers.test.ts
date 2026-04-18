@@ -33,7 +33,7 @@ function createDeps() {
 }
 
 test("/thread new resets the current topic to start a fresh thread", async () => {
-  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
+  const { store, projects, admin, appState, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -49,8 +49,10 @@ test("/thread new resets the current topic to start a fresh thread", async () =>
     registerHandlers({
       bot,
       config: createConfig(),
-      store,
+      sessions: store,
       projects,
+      admin,
+      appState,
       codex: codex as never,
       threadCatalog,
       buffers: {} as never,
@@ -81,7 +83,7 @@ test("/thread new resets the current topic to start a fresh thread", async () =>
 });
 
 test("/thread resume binds the current topic to a known thread id", async () => {
-  const { store, projects, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
+  const { store, projects, admin, appState, cleanup, bot, commands, createdTopics, sent, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     store.getOrCreate({
@@ -108,8 +110,10 @@ test("/thread resume binds the current topic to a known thread id", async () => 
     registerHandlers({
       bot,
       config: createConfig(),
-      store,
+      sessions: store,
       projects,
+      admin,
+      appState,
       codex: codex as never,
       threadCatalog,
       buffers: {} as never,
@@ -140,7 +144,7 @@ test("/thread resume binds the current topic to a known thread id", async () => 
 });
 
 test("/thread list shows saved project threads from the Codex session catalog", async () => {
-  const { store, projects, cleanup, bot, commands, threadCatalog, codex } = createDeps();
+  const { store, projects, admin, appState, cleanup, bot, commands, threadCatalog, codex } = createDeps();
   try {
     const projectRoot = process.cwd();
     projects.upsert({ chatId: "-100", cwd: projectRoot, name: "telecodex" });
@@ -179,8 +183,10 @@ test("/thread list shows saved project threads from the Codex session catalog", 
     registerHandlers({
       bot,
       config: createConfig(),
-      store,
+      sessions: store,
       projects,
+      admin,
+      appState,
       codex: codex as never,
       threadCatalog,
       buffers: {} as never,
@@ -227,15 +233,17 @@ test("/thread list shows saved project threads from the Codex session catalog", 
 });
 
 test("/thread new requires an existing topic context", async () => {
-  const { store, projects, cleanup, bot, commands, createdTopics, threadCatalog, codex } = createDeps();
+  const { store, projects, admin, appState, cleanup, bot, commands, createdTopics, threadCatalog, codex } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
 
     registerHandlers({
       bot,
       config: createConfig(),
-      store,
+      sessions: store,
       projects,
+      admin,
+      appState,
       codex: codex as never,
       threadCatalog,
       buffers: {} as never,
@@ -261,7 +269,7 @@ test("/thread new requires an existing topic context", async () => {
 });
 
 test("/thread resume refuses to change binding while a run is active", async () => {
-  const { store, projects, cleanup, bot, commands, threadCatalog } = createDeps();
+  const { store, projects, admin, appState, cleanup, bot, commands, threadCatalog } = createDeps();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -293,8 +301,10 @@ test("/thread resume refuses to change binding while a run is active", async () 
     registerHandlers({
       bot,
       config: createConfig(),
-      store,
+      sessions: store,
       projects,
+      admin,
+      appState,
       codex: {
         isRunning: (sessionKey: string) => sessionKey === session.sessionKey,
       } as never,

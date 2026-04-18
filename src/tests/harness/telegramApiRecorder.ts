@@ -90,6 +90,34 @@ export class TelegramApiRecorder {
           },
           ...(payload.message_thread_id == null ? {} : { message_thread_id: payload.message_thread_id }),
         };
+      case "sendPhoto":
+        return {
+          message_id: this.nextMessageId++,
+          date: 0,
+          caption: payload.caption,
+          photo: [{ file_id: "photo-generated", file_unique_id: "photo-generated-unique", width: 1024, height: 1024 }],
+          chat: {
+            id: payload.chat_id,
+            type: resolveChatType(payload.chat_id),
+          },
+          ...(payload.message_thread_id == null ? {} : { message_thread_id: payload.message_thread_id }),
+        };
+      case "sendDocument":
+        return {
+          message_id: this.nextMessageId++,
+          date: 0,
+          caption: payload.caption,
+          document: {
+            file_id: "document-generated",
+            file_unique_id: "document-generated-unique",
+            file_name: "attachment.bin",
+          },
+          chat: {
+            id: payload.chat_id,
+            type: resolveChatType(payload.chat_id),
+          },
+          ...(payload.message_thread_id == null ? {} : { message_thread_id: payload.message_thread_id }),
+        };
       case "editMessageText":
       case "sendChatAction":
       case "setMyCommands":
@@ -127,5 +155,27 @@ function resolveChatType(chatId: unknown): "private" | "supergroup" {
 }
 
 function clone<T>(value: T): T {
-  return typeof value === "undefined" ? value : structuredClone(value);
+  return (typeof value === "undefined" ? value : structuredClone(normalizeCloneValue(value))) as T;
+}
+
+function normalizeCloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeCloneValue(entry));
+  }
+  if (typeof value !== "object" || value == null) {
+    return value;
+  }
+  if (looksLikeInputFile(value)) {
+    return {
+      __type: "InputFile",
+      filename: "filename" in value ? value.filename : undefined,
+    };
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, normalizeCloneValue(entry)]),
+  );
+}
+
+function looksLikeInputFile(value: object): value is { filename?: string } {
+  return "toRaw" in value && typeof (value as { toRaw?: unknown }).toRaw === "function";
 }

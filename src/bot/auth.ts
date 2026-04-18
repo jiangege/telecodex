@@ -1,10 +1,11 @@
 import type { Context, NextFunction } from "grammy";
 import type { Logger } from "../runtime/logger.js";
-import type { BindingCodeState, SessionStore } from "../store/sessions.js";
-import { replyError, replyNotice } from "../telegram/formatted.js";
+import type { BindingCodeState } from "../store/adminStore.js";
+import type { AdminStore } from "../store/adminStore.js";
+import { replyError, replyNotice } from "../telegram/replyDocument.js";
 
 export function authMiddleware(input: {
-  store: SessionStore;
+  admin: AdminStore;
   onAdminBound?: (userId: number) => void;
   logger?: Logger;
 }) {
@@ -27,8 +28,8 @@ export function authMiddleware(input: {
       return;
     }
 
-    const authorizedUserId = input.store.getAuthorizedUserId();
-    const binding = input.store.getBindingCodeState();
+    const authorizedUserId = input.admin.getAuthorizedUserId();
+    const binding = input.admin.getBindingCodeState();
     const messageText = ctx.message?.text?.trim();
     if (authorizedUserId != null) {
       if (authorizedUserId === userId) {
@@ -39,12 +40,11 @@ export function authMiddleware(input: {
       if (ctx.chat?.type === "private" && binding?.mode === "rebind" && messageText) {
         const handled = await handleBindingCodeMessage({
           ctx,
-          userId,
           text: messageText,
           binding,
-          store: input.store,
+          admin: input.admin,
           success: async () => {
-            input.store.rebindAuthorizedUserId(userId);
+            input.admin.rebindAuthorizedUserId(userId);
             await replyNotice(ctx, "Admin handoff succeeded. This Telegram account is now authorized to use telecodex.");
           },
           mismatchLabel: "Admin handoff code did not match.",
@@ -77,12 +77,11 @@ export function authMiddleware(input: {
     if (messageText) {
       const handled = await handleBindingCodeMessage({
         ctx,
-        userId,
         text: messageText,
         binding,
-        store: input.store,
+        admin: input.admin,
         success: async () => {
-          const claimedUserId = input.store.claimAuthorizedUserId(userId);
+          const claimedUserId = input.admin.claimAuthorizedUserId(userId);
           if (claimedUserId === userId) {
             input.onAdminBound?.(userId);
             await replyNotice(ctx, "Admin binding succeeded. Only this Telegram account can use this bot from now on.");
@@ -102,10 +101,9 @@ export function authMiddleware(input: {
 
 async function handleBindingCodeMessage(input: {
   ctx: Context;
-  userId: number;
   text: string;
   binding: BindingCodeState;
-  store: SessionStore;
+  admin: AdminStore;
   success: () => Promise<void>;
   mismatchLabel: string;
   exhaustedLabel: string;
@@ -119,7 +117,7 @@ async function handleBindingCodeMessage(input: {
     return false;
   }
 
-  const attempt = input.store.recordBindingCodeFailure();
+  const attempt = input.admin.recordBindingCodeFailure();
   if (!attempt) {
     await replyError(input.ctx, "The binding code is no longer active. Issue a new one and try again.");
     return true;

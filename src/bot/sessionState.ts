@@ -1,4 +1,4 @@
-import type { TelegramSession } from "../store/sessions.js";
+import type { TelegramSession } from "../store/sessionStore.js";
 
 export function sessionBufferKey(sessionKey: string): string {
   return `session:${sessionKey}`;

@@ -15,17 +15,15 @@ import {
 import { parseCodexConfigOverrides } from "../../codex/configOverrides.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
-  assertProjectScopedPath,
-  formatProfileReply,
-  formatReasoningEffort,
   getProjectForContext,
   requireScopedSession,
-  resolveExistingDirectory,
-} from "../commandSupport.js";
-import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/formatted.js";
+} from "../commandContext.js";
+import { formatProfileReply, formatReasoningEffort } from "../helpText.js";
+import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
+import { assertProjectScopedPath, resolveExistingDirectory } from "../../pathScope.js";
 
-type SessionConfigDeps = Pick<BotHandlerDeps, "bot" | "config" | "store" | "projects" | "codex" | "logger">;
+type SessionConfigDeps = Pick<BotHandlerDeps, "bot" | "config" | "sessions" | "projects" | "appState" | "codex" | "logger">;
 
 export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
   registerDirectoryHandlers(deps);
@@ -35,11 +33,11 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
 }
 
 function registerDirectoryHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, store, projects, logger } = deps;
+  const { bot, config, sessions, projects, logger } = deps;
 
   bot.command("cwd", wrapUserFacingHandler("cwd", logger, async (ctx) => {
     const project = getProjectForContext(ctx, projects);
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!project || !session) return;
 
     const cwd = ctx.match.trim();
@@ -53,7 +51,7 @@ function registerDirectoryHandlers(deps: SessionConfigDeps): void {
 
     try {
       const allowed = assertProjectScopedPath(cwd, project.cwd);
-      store.setCwd(session.sessionKey, allowed);
+      sessions.setCwd(session.sessionKey, allowed);
       await replyDocument(ctx, {
         title: "Set cwd",
         fields: [codeField("cwd", allowed)],
@@ -65,10 +63,10 @@ function registerDirectoryHandlers(deps: SessionConfigDeps): void {
 }
 
 function registerProfileHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, store, projects, logger } = deps;
+  const { bot, config, sessions, projects, logger } = deps;
 
   bot.command("mode", wrapUserFacingHandler("mode", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const preset = ctx.match.trim();
@@ -91,13 +89,13 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
     }
 
     const profile = profileFromPreset(preset);
-    store.setSandboxMode(session.sessionKey, profile.sandboxMode);
-    store.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
+    sessions.setSandboxMode(session.sessionKey, profile.sandboxMode);
+    sessions.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
     await replyNotice(ctx, formatProfileReply("Preset updated.", profile.sandboxMode, profile.approvalPolicy));
   }));
 
   bot.command("sandbox", wrapUserFacingHandler("sandbox", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const sandboxMode = ctx.match.trim();
@@ -110,12 +108,12 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setSandboxMode(session.sessionKey, sandboxMode);
+    sessions.setSandboxMode(session.sessionKey, sandboxMode);
     await replyNotice(ctx, formatProfileReply("Sandbox updated.", sandboxMode, session.approvalPolicy));
   }));
 
   bot.command("approval", wrapUserFacingHandler("approval", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const approvalPolicy = ctx.match.trim();
@@ -128,12 +126,12 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setApprovalPolicy(session.sessionKey, approvalPolicy);
+    sessions.setApprovalPolicy(session.sessionKey, approvalPolicy);
     await replyNotice(ctx, formatProfileReply("Approval policy updated.", session.sandboxMode, approvalPolicy));
   }));
 
   bot.command("yolo", wrapUserFacingHandler("yolo", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -148,8 +146,8 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
     }
 
     const profile = profileFromPreset(value === "on" ? "yolo" : "write");
-    store.setSandboxMode(session.sessionKey, profile.sandboxMode);
-    store.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
+    sessions.setSandboxMode(session.sessionKey, profile.sandboxMode);
+    sessions.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
     await replyNotice(
       ctx,
       formatProfileReply(
@@ -162,10 +160,10 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
 }
 
 function registerExecutionHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, store, projects, logger } = deps;
+  const { bot, config, sessions, projects, logger } = deps;
 
   bot.command("model", wrapUserFacingHandler("model", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const model = ctx.match.trim();
@@ -174,12 +172,12 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setModel(session.sessionKey, model);
+    sessions.setModel(session.sessionKey, model);
     await replyNotice(ctx, `Set model: ${model}`);
   }));
 
   bot.command("effort", wrapUserFacingHandler("effort", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -197,12 +195,12 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setReasoningEffort(session.sessionKey, value === "default" ? null : value);
+    sessions.setReasoningEffort(session.sessionKey, value === "default" ? null : value);
     await replyNotice(ctx, `Set reasoning effort: ${value === "default" ? "codex-default" : value}`);
   }));
 
   bot.command("web", wrapUserFacingHandler("web", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -220,12 +218,12 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setWebSearchMode(session.sessionKey, value === "default" ? null : value);
+    sessions.setWebSearchMode(session.sessionKey, value === "default" ? null : value);
     await replyNotice(ctx, `Set web search: ${value === "default" ? "codex-default" : value}`);
   }));
 
   bot.command("network", wrapUserFacingHandler("network", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -243,12 +241,12 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setNetworkAccessEnabled(session.sessionKey, value === "on");
+    sessions.setNetworkAccessEnabled(session.sessionKey, value === "on");
     await replyNotice(ctx, `Set network access: ${value}`);
   }));
 
   bot.command("gitcheck", wrapUserFacingHandler("gitcheck", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -266,17 +264,17 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    store.setSkipGitRepoCheck(session.sessionKey, value === "skip");
+    sessions.setSkipGitRepoCheck(session.sessionKey, value === "skip");
     await replyNotice(ctx, `Set git repo check: ${value}`);
   }));
 }
 
 function registerAdvancedHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, store, projects, codex, logger } = deps;
+  const { bot, config, sessions, projects, appState, codex, logger } = deps;
 
   bot.command("adddir", wrapUserFacingHandler("adddir", logger, async (ctx) => {
     const project = getProjectForContext(ctx, projects);
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!project || !session) return;
 
     const [command, ...rest] = ctx.match.trim().split(/\s+/).filter(Boolean);
@@ -309,7 +307,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
       try {
         const directory = assertProjectScopedPath(args, project.cwd);
         const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
-        store.setAdditionalDirectories(session.sessionKey, next);
+        sessions.setAdditionalDirectories(session.sessionKey, next);
         await replyDocument(ctx, {
           title: "Added additional directory",
           fields: [codeField("directory", directory)],
@@ -328,7 +326,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
       try {
         const directory = resolveExistingDirectory(args);
         const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
-        store.setAdditionalDirectories(session.sessionKey, next);
+        sessions.setAdditionalDirectories(session.sessionKey, next);
         await replyDocument(ctx, {
           title: "Added external additional directory outside the project root.",
           fields: [codeField("directory", directory)],
@@ -347,13 +345,13 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
         return;
       }
       const next = session.additionalDirectories.filter((_entry, entryIndex) => entryIndex !== index - 1);
-      store.setAdditionalDirectories(session.sessionKey, next);
+      sessions.setAdditionalDirectories(session.sessionKey, next);
       await replyNotice(ctx, `Removed additional directory #${index}.`);
       return;
     }
 
     if (command === "clear") {
-      store.setAdditionalDirectories(session.sessionKey, []);
+      sessions.setAdditionalDirectories(session.sessionKey, []);
       await replyNotice(ctx, "Cleared additional directories.");
       return;
     }
@@ -362,7 +360,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("schema", wrapUserFacingHandler("schema", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, store, projects, config);
+    const session = await requireScopedSession(ctx, sessions, projects, config);
     if (!session) return;
 
     const raw = ctx.match.trim();
@@ -377,7 +375,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
       return;
     }
     if (raw === "clear") {
-      store.setOutputSchema(session.sessionKey, null);
+      sessions.setOutputSchema(session.sessionKey, null);
       await replyNotice(ctx, "Cleared output schema.");
       return;
     }
@@ -393,7 +391,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
         return;
       }
       const normalized = JSON.stringify(parsed);
-      store.setOutputSchema(session.sessionKey, normalized);
+      sessions.setOutputSchema(session.sessionKey, normalized);
       await replyDocument(ctx, {
         title: "Set output schema",
         fields: [codeField("schema", normalized)],
@@ -406,7 +404,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
   bot.command("codexconfig", wrapUserFacingHandler("codexconfig", logger, async (ctx) => {
     const raw = ctx.match.trim();
     if (!raw || raw === "show") {
-      const current = store.getAppState("codex_config_overrides");
+      const current = appState.get("codex_config_overrides");
       await replyDocument(ctx, {
         title: "Current Codex config overrides",
         fields: current
@@ -417,7 +415,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
       return;
     }
     if (raw === "clear") {
-      store.deleteAppState("codex_config_overrides");
+      appState.delete("codex_config_overrides");
       codex.setConfigOverrides(undefined);
       await replyNotice(ctx, "Cleared Codex config overrides. They will apply to future runs.");
       return;
@@ -430,7 +428,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
     try {
       const configOverrides = parseCodexConfigOverrides(raw.slice(4).trim());
       const serialized = JSON.stringify(configOverrides);
-      store.setAppState("codex_config_overrides", serialized);
+      appState.set("codex_config_overrides", serialized);
       codex.setConfigOverrides(configOverrides);
       await replyDocument(ctx, {
         title: "Set Codex config overrides. They will apply to future runs.",

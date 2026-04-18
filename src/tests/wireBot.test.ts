@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { wireBot } from "../bot/createBot.js";
+import { wireBot } from "../bot/wireBot.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createNoopLogger, createTestStores } from "./helpers.js";
 
 function createConfig() {
@@ -14,13 +14,14 @@ function createConfig() {
 }
 
 test("wireBot runs startup topic cleanup and removes stale topic bindings", async () => {
-  const { store, projects, cleanup } = createTestStores();
+  const { sessions, projects, admin, appState, cleanup } = createTestStores();
   const { bot, api } = createFakeHandlerBot();
   const threadCatalog = createFakeThreadCatalog();
 
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
-    const session = store.getOrCreate({
+    admin.claimAuthorizedUserId(101);
+    const session = sessions.getOrCreate({
       sessionKey: "-100:31",
       chatId: "-100",
       messageThreadId: "31",
@@ -39,39 +40,42 @@ test("wireBot runs startup topic cleanup and removes stale topic bindings", asyn
     wireBot({
       bot,
       config: createConfig(),
-      store,
+      sessions,
       projects,
+      admin,
+      appState,
       codex: {
         isRunning: () => false,
       } as never,
       threadCatalog,
-      bootstrapCode: null,
       logger: createNoopLogger(),
     });
 
-    await waitFor(() => store.get(session.sessionKey) === null);
-    assert.equal(store.get(session.sessionKey), null);
+    await waitFor(() => sessions.get(session.sessionKey) === null);
+    assert.equal(sessions.get(session.sessionKey), null);
   } finally {
     cleanup();
   }
 });
 
 test("wireBot syncs Telegram command menus for private chats and groups", async () => {
-  const { store, projects, cleanup } = createTestStores();
+  const { sessions, projects, admin, appState, cleanup } = createTestStores();
   const { bot, botCommands } = createFakeHandlerBot();
   const threadCatalog = createFakeThreadCatalog();
 
   try {
+    admin.claimAuthorizedUserId(101);
     wireBot({
       bot,
       config: createConfig(),
-      store,
+      sessions,
       projects,
+      admin,
+      appState,
       codex: {
         isRunning: () => false,
       } as never,
       threadCatalog,
-      bootstrapCode: null,
       logger: createNoopLogger(),
     });
 
@@ -92,21 +96,23 @@ test("wireBot syncs Telegram command menus for private chats and groups", async 
 });
 
 test("wireBot can defer startup initialization until explicitly requested", async () => {
-  const { store, projects, cleanup } = createTestStores();
+  const { sessions, projects, admin, appState, cleanup } = createTestStores();
   const { bot, botCommands } = createFakeHandlerBot();
   const threadCatalog = createFakeThreadCatalog();
 
   try {
+    admin.claimAuthorizedUserId(101);
     const wired = wireBot({
       bot,
       config: createConfig(),
-      store,
+      sessions,
       projects,
+      admin,
+      appState,
       codex: {
         isRunning: () => false,
       } as never,
       threadCatalog,
-      bootstrapCode: null,
       logger: createNoopLogger(),
       autoInitialize: false,
     });

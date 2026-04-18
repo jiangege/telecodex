@@ -1,5 +1,5 @@
 import type { Bot } from "grammy";
-import type { SessionRuntimeState, SessionRuntimeStatus, SessionStore, TelegramSession } from "../store/sessions.js";
+import type { SessionRuntimeState, SessionRuntimeStatus, SessionStore, TelegramSession } from "../store/sessionStore.js";
 import type { Logger } from "./logger.js";
 
 export type SessionRuntimeEvent =

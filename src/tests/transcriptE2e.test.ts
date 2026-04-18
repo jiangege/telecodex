@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createScenarioHarness } from "./harness/scenarioHarness.js";
 
@@ -263,6 +266,54 @@ test("transcript e2e sends Telegram images to Codex as local_image input", async
     assert.equal(harness.recorder.getCalls("getFile").length, 1);
   } finally {
     await harness.cleanup();
+  }
+});
+
+test("transcript e2e sends assistant markdown images back to Telegram media", async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-generated-image-"));
+  const generatedImage = path.join(projectRoot, "generated-color-study.png");
+  writeFileSync(generatedImage, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const harness = createScenarioHarness({
+    cwd: projectRoot,
+  });
+  harness.codex.enqueueRun({
+    steps: [
+      { type: "thread.started", thread_id: "thread-generated-image-1" },
+      { type: "turn.started" },
+      {
+        type: "item.completed",
+        item: {
+          id: "msg-generated-image",
+          type: "agent_message",
+          text: `Generated concept.\n\n![Color study](${generatedImage})`,
+        },
+      },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+    ],
+  });
+
+  try {
+    await harness.sendGroupCommand("project", `bind ${projectRoot}`);
+    await harness.sendGroupText("generate an image", 309);
+    await harness.waitFor(() => harness.store.get("-1003940193016:309")?.runtimeStatus === "idle");
+
+    assert.equal(harness.sendPhotoCalls.length, 1);
+    assert.equal(harness.sendPhotoCalls[0]?.payload.message_thread_id, 309);
+    assert.equal(harness.sendPhotoCalls[0]?.payload.caption, "Color study");
+    assert.deepEqual(harness.sendPhotoCalls[0]?.payload.photo, {
+      __type: "InputFile",
+      filename: "generated-color-study.png",
+    });
+
+    const deliveredText = [
+      ...harness.editMessageTextCalls.map((call) => String(call.payload.text)),
+      ...harness.sendMessageCalls.map((call) => String(call.payload.text)),
+    ].join("\n");
+    assert.match(deliveredText, /Generated concept\./);
+    assert.doesNotMatch(deliveredText, /generated-color-study\.png/);
+  } finally {
+    await harness.cleanup();
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 

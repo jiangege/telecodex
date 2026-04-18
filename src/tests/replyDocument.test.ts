@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GrammyError } from "grammy";
-import { codeField, renderReplyDocument, replyDocument, replyError, replyNotice, replyUsage, sendReplyNotice, textField } from "../telegram/formatted.js";
+import { codeField, renderReplyDocument, replyDocument, replyError, replyNotice, replyUsage, sendReplyNotice, textField } from "../telegram/replyDocument.js";
 
 test("reply documents enforce the standard Telegram reply shape", () => {
   const message = renderReplyDocument({

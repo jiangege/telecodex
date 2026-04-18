@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { Bot } from "grammy";
 import type { AppConfig } from "../../config.js";
-import { wireBot } from "../../bot/createBot.js";
+import { wireBot } from "../../bot/wireBot.js";
 import type { TelegramAttachmentIo } from "../../telegram/attachments.js";
 import { createFakeThreadCatalog, createNoopLogger, createTestStores } from "../helpers.js";
 import { FakeClock } from "./fakeClock.js";
@@ -52,16 +52,17 @@ export function createScenarioHarness(input?: {
     updateIntervalMs: input?.updateIntervalMs ?? 1,
   };
 
-  stores.store.claimAuthorizedUserId(TEST_USER_ID);
+  stores.admin.claimAuthorizedUserId(TEST_USER_ID);
 
   const wired = wireBot({
     bot,
     config,
-    store: stores.store,
+    sessions: stores.sessions,
     projects: stores.projects,
+    admin: stores.admin,
+    appState: stores.appState,
     codex: codex as never,
     threadCatalog,
-    bootstrapCode: null,
     logger,
     autoInitialize: false,
     bufferOptions: {
@@ -145,6 +146,12 @@ export function createScenarioHarness(input?: {
     get sendMessageCalls() {
       return recorder.getCalls("sendMessage");
     },
+    get sendPhotoCalls() {
+      return recorder.getCalls("sendPhoto");
+    },
+    get sendDocumentCalls() {
+      return recorder.getCalls("sendDocument");
+    },
     get editMessageTextCalls() {
       return recorder.getCalls("editMessageText");
     },
@@ -153,7 +160,7 @@ export function createScenarioHarness(input?: {
     },
     async cleanup(): Promise<void> {
       wired.buffers.dispose();
-      await stores.store.flush();
+      await stores.sessions.flush();
       stores.cleanup();
     },
   };
