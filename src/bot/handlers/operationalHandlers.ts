@@ -21,6 +21,13 @@ import { refreshSessionIfActiveTurnIsStale } from "../run/staleRunRecovery.js";
 import { formatIsoTimestamp, sessionLogFields } from "../sessionState.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
+export async function interruptActiveRun(input: {
+  sessionKey: string;
+  codex: BotHandlerDeps["codex"];
+}): Promise<boolean> {
+  return input.codex.interrupt(input.sessionKey);
+}
+
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
   const { bot, config, sessions, projects, admin, codex, buffers, logger } = deps;
 
@@ -152,8 +159,10 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     }
 
     try {
-      codex.interrupt(session.sessionKey);
-      await replyNotice(ctx, "Interrupt requested for the current run. Waiting for Codex SDK to stop.");
+      await interruptActiveRun({
+        sessionKey: session.sessionKey,
+        codex,
+      });
     } catch (error) {
       logger?.warn("interrupt turn failed", {
         ...contextLogFields(ctx),

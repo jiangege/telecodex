@@ -12,6 +12,7 @@ import { numericChatId, numericMessageThreadId } from "../topicSession.js";
 import { isSessionBusy, sessionBufferKey, sessionLogFields } from "../sessionState.js";
 import { applyRuntimeStateForSdkEvent, projectSdkEventToTelegramBuffer } from "./sdkEventProjection.js";
 import { refreshSessionIfActiveTurnIsStale } from "./staleRunRecovery.js";
+import { stopInlineKeyboard } from "./stopButton.js";
 
 export interface HandleUserTextResult {
   status: "started" | "busy" | "failed";
@@ -21,7 +22,7 @@ export interface HandleUserTextResult {
 const BUSY_NOTICE_LINES = [
   "Codex is still working in this topic.",
   "New messages are ignored until the current run finishes or fails.",
-  "Use /stop to interrupt it.",
+  "Use the Stop button to interrupt it. /stop is still available if needed.",
 ];
 
 export async function handleUserText(input: {
@@ -92,6 +93,10 @@ export async function handleUserInput(input: {
     outputMessageId = await buffers.create(bufferKey, {
       chatId: numericChatId(session),
       messageThreadId: numericMessageThreadId(session),
+      replyMarkup: stopInlineKeyboard({
+        chatId: numericChatId(session),
+        messageThreadId: numericMessageThreadId(session),
+      }),
     });
   } catch (error) {
     sessions.setOutputMessage(session.sessionKey, null);

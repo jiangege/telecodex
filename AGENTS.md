@@ -29,7 +29,8 @@
 - One topic inside that supergroup maps to one Codex thread.
 - Each topic has at most one active run.
 - Follow-up messages during an active run are ignored and should receive a fixed busy notice.
-- `/stop` is the only user-facing interruption path during an active run.
+- The primary user-facing interruption path during an active run is an inline Stop button on the working message.
+- `/stop` remains available as a fallback interruption path.
 - Telegram typing should stay active for the duration of a run, subject to Telegram rate limits.
 
 ## State Model

@@ -132,6 +132,17 @@ export function createScenarioHarness(input?: {
         }),
       );
     },
+    async sendGroupCallbackQuery(input: { data: string; messageThreadId: number; messageId?: number }): Promise<void> {
+      await this.sendUpdate(
+        updates.callbackQuery({
+          data: input.data,
+          chatId: TEST_GROUP_CHAT_ID,
+          messageThreadId: input.messageThreadId,
+          fromId: TEST_USER_ID,
+          ...(input.messageId == null ? {} : { messageId: input.messageId }),
+        }),
+      );
+    },
     async advance(ms: number): Promise<void> {
       await clock.tick(ms);
     },
@@ -157,6 +168,9 @@ export function createScenarioHarness(input?: {
     },
     get sendChatActionCalls() {
       return recorder.getCalls("sendChatAction");
+    },
+    get answerCallbackQueryCalls() {
+      return recorder.getCalls("answerCallbackQuery");
     },
     async cleanup(): Promise<void> {
       wired.buffers.dispose();

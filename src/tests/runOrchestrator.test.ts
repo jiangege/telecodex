@@ -3,6 +3,7 @@ import test from "node:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { handleUserText } from "../bot/run/runOrchestrator.js";
+import { encodeStopCallbackData } from "../bot/run/stopButton.js";
 import { createFakeBot, createNoopLogger, createTestStores } from "./helpers.js";
 
 function createConfigRuntime(events: ThreadEvent[], options?: { running?: boolean }) {
@@ -125,7 +126,7 @@ test("handleUserText sends a fixed busy notice when a session already has an act
     assert.equal(result.status, "busy");
     assert.match(sent.at(-1)?.text ?? "", /Codex is still working in this topic/);
     assert.match(sent.at(-1)?.text ?? "", /New messages are ignored until the current run finishes or fails/);
-    assert.match(sent.at(-1)?.text ?? "", /Use \/stop to interrupt it/);
+    assert.match(sent.at(-1)?.text ?? "", /Use the Stop button to interrupt it/);
   } finally {
     cleanup();
   }
@@ -171,6 +172,41 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
     assert.equal(latest?.codexThreadId, "thread-211");
     assert.equal(latest?.runtimeStatus, "idle");
     assert.ok(edited.some((entry) => entry.text.includes("final answer")));
+  } finally {
+    cleanup();
+  }
+});
+
+test("handleUserText creates the working buffer with a Stop button", async () => {
+  const { store, projects, cleanup } = createTestStores();
+  const { bot, sent } = createFakeBot();
+  try {
+    projects.upsert({ chatId: "-100", cwd: process.cwd() });
+    const session = store.getOrCreate({
+      sessionKey: "-100:213",
+      chatId: "-100",
+      messageThreadId: "213",
+      telegramTopicName: "demo",
+      defaultCwd: process.cwd(),
+      defaultModel: "gpt-5.4",
+    });
+
+    const result = await handleUserText({
+      text: "attach stop control",
+      session,
+      sessions: store,
+      projects,
+      codex: createDeferredTurnRuntime().runtime as never,
+      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      bot,
+      logger: createNoopLogger(),
+    });
+
+    assert.equal(result.status, "started");
+    const startingMessage = sent.find((entry) => entry.messageThreadId === 213 && entry.text === "Starting...");
+    assert.deepEqual(startingMessage?.options?.reply_markup, {
+      inline_keyboard: [[{ text: "Stop", callback_data: encodeStopCallbackData({ chatId: -100, messageThreadId: 213 }) }]],
+    });
   } finally {
     cleanup();
   }

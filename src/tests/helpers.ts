@@ -150,7 +150,8 @@ export function createFakeBot() {
     messageThreadId: number | null;
     options: Record<string, unknown> | null;
   }> = [];
-  const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
+  const edited: Array<{ chatId: number; messageId: number; text: string; options?: Record<string, unknown> }> = [];
+  const answeredCallbacks: Array<{ callbackQueryId: string; text?: string; showAlert?: boolean }> = [];
   const chatActions: Array<{ chatId: number; action: string; messageThreadId: number | null }> = [];
   const forumEdits: Array<{ chatId: number; messageThreadId: number; name: string }> = [];
   const deletedTopics: Array<{ chatId: number; messageThreadId: number }> = [];
@@ -165,8 +166,8 @@ export function createFakeBot() {
       });
       return { message_id: nextMessageId++ };
     },
-    async editMessageText(chatId: number, messageId: number, text: string) {
-      edited.push({ chatId, messageId, text });
+    async editMessageText(chatId: number, messageId: number, text: string, options?: Record<string, unknown>) {
+      edited.push({ chatId, messageId, text, ...(options ? { options } : {}) });
       return true;
     },
     async sendPhoto(chatId: number, photo: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
@@ -209,6 +210,14 @@ export function createFakeBot() {
       deletedTopics.push({ chatId, messageThreadId });
       return true;
     },
+    async answerCallbackQuery(callbackQueryId: string, options?: { text?: string; show_alert?: boolean }) {
+      answeredCallbacks.push({
+        callbackQueryId,
+        ...(options?.text == null ? {} : { text: options.text }),
+        ...(options?.show_alert == null ? {} : { showAlert: options.show_alert }),
+      });
+      return true;
+    },
   };
   const bot = { api };
 
@@ -222,6 +231,7 @@ export function createFakeBot() {
     chatActions,
     forumEdits,
     deletedTopics,
+    answeredCallbacks,
   };
 }
 
@@ -233,7 +243,7 @@ export function createFakeHandlerBot() {
     messageThreadId: number | null;
     options: Record<string, unknown> | null;
   }> = [];
-  const edited: Array<{ chatId: number; messageId: number; text: string }> = [];
+  const edited: Array<{ chatId: number; messageId: number; text: string; options?: Record<string, unknown> }> = [];
   const sentPhotos: Array<{
     chatId: number;
     photo: unknown;
@@ -252,6 +262,7 @@ export function createFakeHandlerBot() {
     commands: Array<{ command: string; description: string }>;
     scope: unknown;
   }> = [];
+  const answeredCallbacks: Array<{ callbackQueryId: string; text?: string; showAlert?: boolean }> = [];
   const commands = new Map<string, (ctx: any) => Promise<unknown>>();
   const events = new Map<string, (ctx: any) => Promise<unknown>>();
 
@@ -265,8 +276,8 @@ export function createFakeHandlerBot() {
       });
       return { message_id: nextMessageId++ };
     },
-    async editMessageText(chatId: number, messageId: number, text: string) {
-      edited.push({ chatId, messageId, text });
+    async editMessageText(chatId: number, messageId: number, text: string, options?: Record<string, unknown>) {
+      edited.push({ chatId, messageId, text, ...(options ? { options } : {}) });
       return true;
     },
     async sendPhoto(chatId: number, photo: unknown, options?: Record<string, unknown> & { message_thread_id?: number | null }) {
@@ -313,6 +324,14 @@ export function createFakeHandlerBot() {
       });
       return true;
     },
+    async answerCallbackQuery(callbackQueryId: string, options?: { text?: string; show_alert?: boolean }) {
+      answeredCallbacks.push({
+        callbackQueryId,
+        ...(options?.text == null ? {} : { text: options.text }),
+        ...(options?.show_alert == null ? {} : { showAlert: options.show_alert }),
+      });
+      return true;
+    },
   };
 
   const bot = {
@@ -349,5 +368,6 @@ export function createFakeHandlerBot() {
     chatActions,
     createdTopics,
     botCommands,
+    answeredCallbacks,
   };
 }

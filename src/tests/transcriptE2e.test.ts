@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { encodeStopCallbackData } from "../bot/run/stopButton.js";
 import { createScenarioHarness } from "./harness/scenarioHarness.js";
 
 test("transcript e2e runs a topic message through preparing, working, and final formatting", async () => {
@@ -24,7 +25,16 @@ test("transcript e2e runs a topic message through preparing, working, and final 
     await harness.waitFor(() => harness.codex.calls.length === 1);
 
     assert.equal(harness.store.get("-1003940193016:301")?.runtimeStatus, "preparing");
-    assert.ok(harness.sendMessageCalls.some((call) => call.payload.text === "Starting..." && call.payload.message_thread_id === 301));
+    const startingCall = harness.sendMessageCalls.find(
+      (call) => call.payload.text === "Starting..." && call.payload.message_thread_id === 301,
+    );
+    assert.ok(startingCall);
+    assert.deepEqual(startingCall?.payload.reply_markup, {
+      inline_keyboard: [[{
+        text: "Stop",
+        callback_data: encodeStopCallbackData({ chatId: -1003940193016, messageThreadId: 301 }),
+      }]],
+    });
 
     control.release();
     await harness.waitFor(() => harness.store.get("-1003940193016:301")?.runtimeStatus === "idle");
@@ -38,12 +48,19 @@ test("transcript e2e runs a topic message through preparing, working, and final 
         String(call.payload.text).includes("<code>thread-transcript-1</code>")
       ),
     );
+    await harness.waitFor(() =>
+      harness.editMessageTextCalls.some((call) =>
+        String(call.payload.text).includes("<code>thread-transcript-1</code>") &&
+        JSON.stringify(call.payload.reply_markup) === JSON.stringify({ inline_keyboard: [] })
+      ),
+    );
     const finalPayload = [
       ...harness.editMessageTextCalls.map((call) => call.payload),
       ...harness.sendMessageCalls.map((call) => call.payload),
-    ].find((payload) => String(payload.text).includes("<code>thread-transcript-1</code>"));
+    ].reverse().find((payload) => String(payload.text).includes("<code>thread-transcript-1</code>"));
     assert.ok(finalPayload);
     assert.equal(finalPayload?.parse_mode, "HTML");
+    assert.deepEqual(finalPayload?.reply_markup, { inline_keyboard: [] });
   } finally {
     await harness.cleanup();
   }
@@ -107,11 +124,49 @@ test("transcript e2e ignores a follow-up message while the active run is still b
     assert.ok(busyNotice);
     assert.equal(busyNotice?.payload.parse_mode, undefined);
     assert.deepEqual(busyNotice?.payload.link_preview_options, { is_disabled: true });
+    assert.match(String(busyNotice?.payload.text), /Use the Stop button to interrupt it/);
 
     first.release();
     await harness.waitFor(() => harness.store.get("-1003940193016:302")?.runtimeStatus === "idle");
 
     assert.deepEqual(harness.codex.calls.map((call) => call.prompt), ["first task"]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("transcript e2e interrupts an active run with the Stop button", async () => {
+  const harness = createScenarioHarness();
+  harness.codex.enqueueRun({
+    steps: [
+      { type: "thread.started", thread_id: "thread-stop-inline-1" },
+      { type: "turn.started" },
+      { type: "pause" },
+      { type: "item.completed", item: { id: "msg-stop-inline", type: "agent_message", text: "should not complete" } },
+      { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+    ],
+  });
+
+  try {
+    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupText("long task", 309);
+    await harness.waitFor(() => harness.codex.getActiveRun("-1003940193016:309")?.lastEventType === "turn.started");
+
+    const startingCall = harness.sendMessageCalls.find(
+      (call) => call.payload.text === "Starting..." && call.payload.message_thread_id === 309,
+    );
+    assert.ok(startingCall);
+    await harness.sendGroupCallbackQuery({
+      data: encodeStopCallbackData({ chatId: -1003940193016, messageThreadId: 309 }),
+      messageThreadId: 309,
+    });
+    await harness.waitFor(() => harness.store.get("-1003940193016:309")?.runtimeStatus === "idle");
+
+    assert.ok(harness.answerCallbackQueryCalls.some((call) => call.payload.text === "Interrupt requested."));
+    assert.ok(
+      harness.editMessageTextCalls.some((call) => String(call.payload.text).includes("Current run interrupted.")) ||
+      harness.sendMessageCalls.some((call) => String(call.payload.text).includes("Current run interrupted.")),
+    );
   } finally {
     await harness.cleanup();
   }
@@ -137,7 +192,7 @@ test("transcript e2e interrupts an active run with /stop", async () => {
     await harness.sendGroupCommand("stop", "", 303);
     await harness.waitFor(() => harness.store.get("-1003940193016:303")?.runtimeStatus === "idle");
 
-    assert.ok(harness.sendMessageCalls.some((call) => String(call.payload.text).includes("Interrupt requested for the current run.")));
+    assert.ok(!harness.sendMessageCalls.some((call) => String(call.payload.text).includes("Interrupt requested for the current run.")));
     assert.ok(
       harness.editMessageTextCalls.some((call) => String(call.payload.text).includes("Current run interrupted.")) ||
       harness.sendMessageCalls.some((call) => String(call.payload.text).includes("Current run interrupted.")),

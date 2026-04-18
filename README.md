@@ -53,8 +53,9 @@ Optional security override:
 - One topic inside that supergroup represents one Codex thread.
 - Work happens by sending normal messages inside the topic.
 - While a run is active, follow-up messages are ignored and Telegram typing stays active.
+- The primary interrupt path is the `Stop` button on the working message.
 - `/status` shows the current runtime state.
-- `/stop` interrupts the active run in the current topic.
+- `/stop` remains available as a fallback if the button is unavailable.
 
 Private chat is only for bootstrap and lightweight admin actions.
 
@@ -89,7 +90,7 @@ My Task
 
 - `/start` or `/help` - show usage help
 - `/status` - show current state
-- `/stop` - interrupt the active run in the current topic
+- `/stop` - interrupt the active run in the current topic if the Stop button is unavailable
 
 ### Admin
 

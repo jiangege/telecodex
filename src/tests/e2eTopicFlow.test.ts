@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../config.js";
 import { registerHandlers } from "../bot/registerHandlers.js";
+import { encodeStopCallbackData } from "../bot/run/stopButton.js";
 import { sessionBufferKey } from "../bot/sessionState.js";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeHandlerBot, createFakeThreadCatalog, createNoopLogger, createTestStores } from "./helpers.js";
@@ -189,9 +190,19 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
     assert.equal(session?.outputMessageId, null);
     assert.equal(codex.calls[0]?.profile.cwd, process.cwd());
     assert.equal(codex.calls[0]?.profile.threadId, null);
-    assert.ok(harness.sent.some((entry) => entry.messageThreadId === topicId && entry.text.includes("Starting...")));
+    const startingMessage = harness.sent.find((entry) => entry.messageThreadId === topicId && entry.text.includes("Starting..."));
+    assert.ok(startingMessage);
+    assert.deepEqual(startingMessage?.options?.reply_markup, {
+      inline_keyboard: [[{ text: "Stop", callback_data: encodeStopCallbackData({ chatId: -100, messageThreadId: topicId }) }]],
+    });
     assert.ok(harness.chatActions.some((entry) => entry.messageThreadId === topicId && entry.action === "typing"));
     assert.ok(harness.edited.some((entry) => entry.text.includes("final: inspect the project")));
+    assert.ok(
+      harness.edited.some((entry) =>
+        entry.text.includes("final: inspect the project") &&
+        JSON.stringify(entry.options?.reply_markup) === JSON.stringify({ inline_keyboard: [] })
+      ),
+    );
 
     const statusReplies = await runCommand(harness, "status", "", topicId);
     const status = statusReplies.at(-1) ?? "";
@@ -234,6 +245,7 @@ test("e2e topic flow ignores follow-up messages while the current run is active"
     assert.ok(busyNotice);
     assert.equal(busyNotice?.options?.parse_mode, undefined);
     assert.deepEqual(busyNotice?.options?.link_preview_options, { is_disabled: true });
+    assert.match(busyNotice?.text ?? "", /Use the Stop button to interrupt it/);
 
     codex.calls[0]!.release();
     await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle");
@@ -319,7 +331,7 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
     await waitFor(() => codex.calls.length === 1 && codex.isRunning(sessionKey));
 
     const replies = await runCommand(harness, "stop", "", topicId);
-    assert.match(replies.at(-1) ?? "", /Interrupt requested for the current run/);
+    assert.equal(replies.length, 0);
     await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle" && !codex.isRunning(sessionKey));
     await waitFor(
       () =>
@@ -332,6 +344,48 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
       harness.sent.some((entry) => entry.text.includes("Current run interrupted")),
     );
     assert.equal(harness.store.get(sessionKey)?.outputMessageId, null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("e2e topic flow interrupts an active run with the Stop button callback", async () => {
+  const harness = createHarness();
+  const codex = new DeferredCodexRuntime();
+
+  try {
+    registerHandlers({
+      bot: harness.bot,
+      config: harness.config,
+      sessions: harness.store,
+      projects: harness.projects,
+      admin: harness.admin,
+      appState: harness.appState,
+      codex: codex as never,
+      threadCatalog: harness.threadCatalog,
+      buffers: harness.buffers,
+    });
+
+    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    const topicId = 210;
+    const sessionKey = `-100:${topicId}`;
+
+    await runTextMessage(harness, topicId, "long task");
+    await waitFor(() => codex.calls.length === 1 && codex.isRunning(sessionKey));
+
+    const startMessage = harness.sent.find((entry) => entry.messageThreadId === topicId && entry.text === "Starting...");
+    assert.ok(startMessage);
+    const callbackHandler = harness.events.get("callback_query:data");
+    assert.ok(callbackHandler);
+    const callbackCtx = createCallbackContext(harness, {
+      data: encodeStopCallbackData({ chatId: -100, messageThreadId: topicId }),
+      messageThreadId: topicId,
+      messageId: 1,
+    });
+    await callbackHandler?.(callbackCtx);
+
+    assert.ok(harness.answeredCallbacks.some((entry) => entry.text === "Interrupt requested."));
+    await waitFor(() => harness.store.get(sessionKey)?.runtimeStatus === "idle" && !codex.isRunning(sessionKey));
   } finally {
     await harness.cleanup();
   }
@@ -650,7 +704,7 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
 });
 
 function createHarness() {
-  const { bot, commands, events, sent, edited, chatActions, createdTopics } = createFakeHandlerBot();
+  const { bot, commands, events, sent, edited, chatActions, createdTopics, answeredCallbacks } = createFakeHandlerBot();
   const stores = createTestStores();
   const threadCatalog = createFakeThreadCatalog();
   const config: AppConfig = {
@@ -671,6 +725,7 @@ function createHarness() {
     edited,
     chatActions,
     createdTopics,
+    answeredCallbacks,
     threadCatalog,
     config,
     buffers,
@@ -742,6 +797,32 @@ async function runImageMessage(
     },
     reply: async () => undefined,
   });
+}
+
+function createCallbackContext(
+  harness: ReturnType<typeof createHarness>,
+  input: { data: string; messageThreadId: number; messageId: number },
+) {
+  return {
+    chat: { id: -100, type: "supergroup" },
+    callbackQuery: {
+      id: `callback-${input.messageThreadId}`,
+      data: input.data,
+      message: {
+        message_id: input.messageId,
+        message_thread_id: input.messageThreadId,
+      },
+    },
+    answerCallbackQuery: async (options: { text?: string; show_alert?: boolean }) => {
+      harness.answeredCallbacks.push({
+        callbackQueryId: `callback-${input.messageThreadId}`,
+        ...(options.text == null ? {} : { text: options.text }),
+        ...(options.show_alert == null ? {} : { showAlert: options.show_alert }),
+      });
+      return true;
+    },
+    reply: async () => undefined,
+  };
 }
 
 function findEventHandler(harness: ReturnType<typeof createHarness>, eventName: string): ((ctx: any) => Promise<unknown>) | null {

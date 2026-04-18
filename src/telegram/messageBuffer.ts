@@ -1,4 +1,5 @@
 import type { Bot } from "grammy";
+import type { InlineKeyboardMarkup } from "grammy/types";
 import {
   editHtmlMessage,
   isMessageNotModifiedError,
@@ -42,6 +43,7 @@ export interface MessageBufferOptions {
 
 export interface MessageBufferCompletionOptions {
   mediaScope?: TelegramMediaScope;
+  clearReplyMarkup?: boolean;
 }
 
 const defaultScheduler: MessageBufferScheduler = {
@@ -57,6 +59,7 @@ interface BufferState {
   messageThreadId: number | null;
   messageId: number;
   phase: "starting" | "running";
+  replyMarkup: InlineKeyboardMarkup | null | undefined;
   text: string;
   progressLines: string[];
   planText: string;
@@ -84,7 +87,10 @@ export class MessageBuffer {
     this.scheduler = input?.scheduler ?? defaultScheduler;
   }
 
-  async create(key: string, input: { chatId: number; messageThreadId: number | null }): Promise<number> {
+  async create(
+    key: string,
+    input: { chatId: number; messageThreadId: number | null; replyMarkup?: InlineKeyboardMarkup | undefined },
+  ): Promise<number> {
     const previous = this.states.get(key);
     if (previous) {
       if (previous.timer) this.scheduler.clearTimeout(previous.timer);
@@ -98,6 +104,7 @@ export class MessageBuffer {
         chatId: input.chatId,
         messageThreadId: input.messageThreadId,
         text: "Starting...",
+        ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
       },
       this.logger,
     );
@@ -106,6 +113,7 @@ export class MessageBuffer {
       messageThreadId: input.messageThreadId,
       messageId: message.message_id,
       phase: "starting",
+      replyMarkup: input.replyMarkup,
       text: "",
       progressLines: [],
       planText: "",
@@ -204,6 +212,9 @@ export class MessageBuffer {
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
       const rendered = text ? renderMarkdownForTelegramContent(text) : null;
+      if (options?.clearReplyMarkup !== false) {
+        state.replyMarkup = null;
+      }
       const chunks =
         rendered?.chunks.length
           ? rendered.chunks
@@ -249,6 +260,7 @@ export class MessageBuffer {
     if (state.timer) this.scheduler.clearTimeout(state.timer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
+      state.replyMarkup = null;
       await this.replaceWithChunks(state, renderPlainChunksForTelegram(`Codex error: ${message}`));
       this.states.delete(key);
     });
@@ -280,6 +292,7 @@ export class MessageBuffer {
         chatId: state.chatId,
         messageId: state.messageId,
         text,
+        ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
       }, this.logger);
       state.lastSentText = text;
     } catch (error) {
@@ -294,6 +307,7 @@ export class MessageBuffer {
             chatId: state.chatId,
             messageThreadId: state.messageThreadId,
             text,
+            ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
           },
           this.logger,
         );
@@ -359,6 +373,7 @@ export class MessageBuffer {
         messageThreadId: state.messageThreadId,
         messageId: state.messageId,
         chunks,
+        ...(state.replyMarkup !== undefined ? { replyMarkup: state.replyMarkup } : {}),
       },
       this.logger,
     );

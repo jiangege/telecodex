@@ -52,6 +52,38 @@ export class UpdateFactory {
     } as unknown as Update;
   }
 
+  callbackQuery(input: {
+    data: string;
+    chatId?: number;
+    messageThreadId?: number | null;
+    fromId?: number;
+    messageId?: number;
+  }): Update {
+    const message = this.baseMessage({
+      chatId: input.chatId ?? TEST_GROUP_CHAT_ID,
+      chatType: "supergroup",
+      fromId: input.fromId ?? TEST_USER_ID,
+      messageThreadId: input.messageThreadId ?? null,
+    });
+    return {
+      update_id: this.nextUpdateId++,
+      callback_query: {
+        id: `callback-${this.nextUpdateId}`,
+        from: {
+          id: input.fromId ?? TEST_USER_ID,
+          is_bot: false,
+          first_name: "Test User",
+        },
+        chat_instance: "test-chat-instance",
+        data: input.data,
+        message: {
+          ...message,
+          message_id: input.messageId ?? message.message_id,
+        },
+      },
+    } as unknown as Update;
+  }
+
   private baseMessage(input: {
     chatId: number;
     chatType: "private" | "supergroup";

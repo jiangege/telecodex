@@ -1,5 +1,6 @@
 import path from "node:path";
 import { GrammyError, HttpError, InputFile, type Bot } from "grammy";
+import type { InlineKeyboardMarkup } from "grammy/types";
 import { assertProjectScopedFile } from "../pathScope.js";
 import type { Logger } from "../runtime/logger.js";
 import { renderPlainChunksForTelegram, renderPlainForTelegram } from "./renderer.js";
@@ -36,13 +37,29 @@ export interface TelegramMediaScope {
   workingDirectory?: string | null;
 }
 
+export interface TelegramReplyMarkupInput {
+  replyMarkup?: InlineKeyboardMarkup | null | undefined;
+}
+
+function telegramReplyMarkup(replyMarkup: InlineKeyboardMarkup | null | undefined): { reply_markup?: InlineKeyboardMarkup } {
+  if (replyMarkup === undefined) return {};
+  if (replyMarkup === null) {
+    return {
+      reply_markup: { inline_keyboard: [] },
+    };
+  }
+  return {
+    reply_markup: replyMarkup,
+  };
+}
+
 const defaultDeliveryRuntime: TelegramDeliveryRuntime = {
   sleep,
 };
 
 export async function sendHtmlMessage(
   bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string },
+  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<{ message_id: number }> {
@@ -53,6 +70,7 @@ export async function sendHtmlMessage(
         ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
+        ...telegramReplyMarkup(input.replyMarkup),
       }),
     logger,
     "telegram send retry scheduled",
@@ -68,7 +86,7 @@ export async function sendHtmlMessage(
 
 export async function sendHtmlChunks(
   bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string },
+  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<Array<{ message_id: number }>> {
@@ -81,7 +99,7 @@ export async function sendHtmlChunks(
 
 export async function sendPlainChunks(
   bot: Bot,
-  input: { chatId: number; messageThreadId: number | null; text: string },
+  input: { chatId: number; messageThreadId: number | null; text: string } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<Array<{ message_id: number }>> {
@@ -153,7 +171,7 @@ export async function replaceOrSendHtmlChunks(
     messageThreadId: number | null;
     messageId: number | null;
     chunks: string[];
-  },
+  } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<number | null> {
@@ -170,6 +188,7 @@ export async function replaceOrSendHtmlChunks(
             chatId: input.chatId,
             messageId: input.messageId,
             text: first,
+            ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
           },
           logger,
           runtime,
@@ -196,6 +215,7 @@ export async function replaceOrSendHtmlChunks(
           chatId: input.chatId,
           messageThreadId: input.messageThreadId,
           text: first,
+          ...(input.replyMarkup !== undefined ? { replyMarkup: input.replyMarkup } : {}),
         },
         logger,
         runtime,
@@ -222,7 +242,7 @@ export async function replaceOrSendHtmlChunks(
 
 export async function editHtmlMessage(
   bot: Bot,
-  input: { chatId: number; messageId: number; text: string },
+  input: { chatId: number; messageId: number; text: string } & TelegramReplyMarkupInput,
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<void> {
@@ -232,6 +252,7 @@ export async function editHtmlMessage(
       bot.api.editMessageText(input.chatId, input.messageId, input.text, {
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
+        ...telegramReplyMarkup(input.replyMarkup),
       }),
     logger,
     "telegram edit retry scheduled",
