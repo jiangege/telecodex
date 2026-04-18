@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveBootstrapBindingState } from "../runtime/bootstrap.js";
+import { buildBootstrapBindingDisplay, resolveBootstrapBindingState } from "../runtime/bootstrap.js";
 import { createTestSessionStore } from "./helpers.js";
 
 test("resolveBootstrapBindingState issues a bootstrap code when no admin is bound", () => {
@@ -53,4 +53,42 @@ test("resolveBootstrapBindingState clears stale bootstrap codes once an admin is
   } finally {
     cleanup();
   }
+});
+
+test("buildBootstrapBindingDisplay includes a deep link and QR code when the bot username is known", async () => {
+  const display = await buildBootstrapBindingDisplay({
+    binding: {
+      code: "bind-123",
+      expiresAt: "2026-04-18T10:00:00.000Z",
+      maxAttempts: 5,
+    },
+    botUsername: "telecodex_bot",
+    workspace: "/tmp/project",
+    renderQrCode: async () => "QR-CODE",
+  });
+
+  assert.equal(display.deepLink, "https://t.me/telecodex_bot?start=bind-123");
+  assert.equal(display.qrCode, "QR-CODE");
+  assert.equal(display.clipboardText, "https://t.me/telecodex_bot?start=bind-123");
+  assert.match(display.noteText, /QR-CODE/);
+  assert.match(display.noteText, /\/project bind \/tmp\/project/);
+  assert.match(display.noteText, /Fallback: send this one-time code/);
+});
+
+test("buildBootstrapBindingDisplay falls back to the raw binding code when the bot username is unknown", async () => {
+  const display = await buildBootstrapBindingDisplay({
+    binding: {
+      code: "bind-123",
+      expiresAt: "2026-04-18T10:00:00.000Z",
+      maxAttempts: 5,
+    },
+    botUsername: null,
+    workspace: "/tmp/project",
+  });
+
+  assert.equal(display.deepLink, null);
+  assert.equal(display.qrCode, null);
+  assert.equal(display.clipboardText, "bind-123");
+  assert.match(display.noteText, /send this one-time binding code/i);
+  assert.doesNotMatch(display.noteText, /https:\/\/t\.me\//);
 });

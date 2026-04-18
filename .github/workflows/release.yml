@@ -1,0 +1,50 @@
+name: Create GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          gh api "repos/${REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${TAG_NAME}" \
+            --jq '.body' > generated-notes.md
+
+          cat <<EOF > release-notes.md
+          Run local Codex from Telegram topics.
+
+          Install:
+          \`\`\`bash
+          npm install -g telecodex
+          telecodex
+          \`\`\`
+
+          Docs:
+          - README: https://github.com/${REPOSITORY}#readme
+
+          $(cat generated-notes.md)
+          EOF
+
+          gh release create "${TAG_NAME}" \
+            --repo "${REPOSITORY}" \
+            --title "${TAG_NAME}" \
+            --notes-file release-notes.md

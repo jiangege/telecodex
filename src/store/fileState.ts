@@ -73,8 +73,10 @@ export class FileStateStorage {
   private readonly sessions = new Map<string, StoredSessionRecord>();
   private readonly flushStateByPath = new Map<string, PendingFlushState>();
 
-  constructor(private readonly rootDir: string) {
-    mkdirSync(rootDir, { recursive: true });
+  constructor(private readonly rootDir: string, options?: { createIfMissing?: boolean }) {
+    if (options?.createIfMissing !== false) {
+      mkdirSync(rootDir, { recursive: true });
+    }
     this.appPath = path.join(rootDir, "app.json");
     this.projectsPath = path.join(rootDir, "projects.json");
     this.sessionsPath = path.join(rootDir, "sessions.json");

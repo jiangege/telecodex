@@ -1,10 +1,16 @@
 # telecodex
 
-Use Telegram forum topics as a remote interface for local Codex.
+Run local Codex from Telegram topics.
 
 `telecodex` connects a Telegram bot to your local `codex` CLI through the
-official TypeScript SDK. It is meant for remote task execution, not as a full
-clone of Codex Desktop.
+official TypeScript SDK. It keeps execution on your machine: one forum
+supergroup per project, one topic per Codex thread, one active run per topic.
+
+## Good Fits
+
+- Kick off or follow up on local repository work from your phone
+- Keep multiple Codex threads organized by Telegram topic
+- Stop a running turn from Telegram without returning to the terminal
 
 ## Requirements
 
@@ -13,7 +19,7 @@ clone of Codex Desktop.
 - A valid local Codex login
 - A Telegram bot token
 
-Check Codex login first:
+Check the local Codex login first:
 
 ```bash
 codex login status
@@ -23,11 +29,33 @@ codex login status
 
 ```bash
 npm install -g telecodex
+telecodex doctor
 telecodex
 ```
 
 Installing `telecodex` does not replace the separate `codex` CLI. The bot uses
 your local Codex installation at runtime.
+
+## 30-Second Quick Start
+
+1. Run `telecodex`.
+2. Open the deep link shown in the terminal or scan the terminal QR code.
+3. If Telegram cannot open the link, send the fallback one-time binding code to
+   the bot in a private chat.
+4. In a Telegram forum supergroup, bind the project:
+
+```text
+/project bind /absolute/path/to/project
+```
+
+5. Create or open a topic and send normal messages to start or continue work.
+
+To reuse an existing Codex thread in the current topic:
+
+```text
+/thread list
+/thread resume <threadId>
+```
 
 ## First Launch
 
@@ -36,8 +64,9 @@ On first launch, `telecodex`:
 1. Finds or asks for the local `codex` binary path.
 2. Verifies local Codex login.
 3. Prompts for a Telegram bot token if none is stored yet.
-4. Generates a one-time bootstrap code if no Telegram admin is bound yet.
-5. Waits for that code in a private Telegram chat with the bot.
+4. Prints a deep link, a terminal QR code, and a fallback one-time code if no
+   Telegram admin is bound yet.
+5. Waits for the first successful admin binding in the bot private chat.
 
 The first successful sender becomes the admin for that bot instance.
 
@@ -58,31 +87,6 @@ Optional security override:
 - `/stop` remains available as a fallback if the button is unavailable.
 
 Private chat is only for bootstrap and lightweight admin actions.
-
-## Quick Start
-
-Inside a Telegram forum supergroup:
-
-1. Bind the group to a project root:
-
-```text
-/project bind /absolute/path/to/project
-```
-
-2. Create or open a Telegram topic manually.
-
-```text
-My Task
-```
-
-3. Send normal messages in that topic to start or continue work with Codex.
-
-4. Or bind the current topic to an existing saved thread:
-
-```text
-/thread list
-/thread resume <threadId>
-```
 
 ## Commands
 
@@ -130,8 +134,8 @@ My Task
 ## Images
 
 - Sending an image in a topic is supported.
-- Telegram photos and image documents are downloaded locally and sent to Codex as
-  `local_image` input.
+- Telegram photos and image documents are downloaded locally and sent to Codex
+  as `local_image` input.
 - Image output is not rendered inline in Telegram text messages.
 
 ## Storage
@@ -147,6 +151,8 @@ the JSON state files and then removes the old SQLite files.
 
 ## Troubleshooting
 
+- Run `telecodex doctor` to check the local Codex binary, login state, Telegram
+  token, workspace, and local paths without changing tracked state.
 - If startup reports a login problem, run `codex login`.
 - If the bot appears idle for a long time, check `/status`.
 - If you need logs, inspect `~/.telecodex/logs/telecodex.log`.

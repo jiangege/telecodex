@@ -104,7 +104,7 @@ export async function startTelecodex(): Promise<void> {
     if (bootstrapCode) {
       console.log("telegram admin is not bound yet");
       console.log("waiting for admin binding from Telegram private chat...");
-      console.log("bootstrap code was shown during setup and copied to the clipboard when possible");
+      console.log("a binding link, terminal QR code, and fallback one-time code were shown during setup when available");
     } else {
       console.log(`authorized telegram user id: ${admin.getAuthorizedUserId()}`);
     }

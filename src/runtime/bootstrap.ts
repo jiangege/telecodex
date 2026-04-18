@@ -10,9 +10,7 @@ import {
 } from "@clack/prompts";
 import clipboard from "clipboardy";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
-import { Bot, GrammyError, HttpError } from "grammy";
 import { buildConfig, type AppConfig } from "../config.js";
 import { AdminStore, BINDING_CODE_MAX_ATTEMPTS } from "../store/adminStore.js";
 import { AppStateStore } from "../store/appStateStore.js";
@@ -27,8 +25,16 @@ import {
   SecretStore,
   type TokenStorageMode,
 } from "./secrets.js";
-
-const MAC_CODEX_BIN = "/Applications/Codex.app/Contents/Resources/codex";
+import {
+  MAC_CODEX_BIN,
+  buildTelegramStartLink,
+  findWorkingCodexBinary,
+  listCodexBinCandidates,
+  probeCodexBinary,
+  readCodexLoginStatus,
+  renderTerminalQrCode,
+  validateTelegramBotToken,
+} from "./runtimeChecks.js";
 
 export interface BootstrapResult {
   config: AppConfig;
@@ -53,6 +59,14 @@ export interface BootstrapBindingState {
   code: string;
   expiresAt: string;
   maxAttempts: number;
+}
+
+export interface BootstrapBindingDisplay {
+  noteText: string;
+  clipboardText: string;
+  deepLink: string | null;
+  qrCode: string | null;
+  projectBindCommand: string;
 }
 
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
@@ -98,13 +112,19 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
 export function initializeRuntimePersistence(input?: {
   stateDir?: string;
   allowPlaintextFallback?: boolean;
+  migrateLegacyState?: boolean;
+  createStateDir?: boolean;
 }): RuntimePersistence {
   const stateDir = input?.stateDir ?? getStateDir();
-  const storage = new FileStateStorage(stateDir);
-  migrateLegacySqliteState({
-    storage,
-    legacyDbPath: getLegacyStateDbPath(),
+  const storage = new FileStateStorage(stateDir, {
+    createIfMissing: input?.createStateDir !== false,
   });
+  if (input?.migrateLegacyState !== false) {
+    migrateLegacySqliteState({
+      storage,
+      legacyDbPath: getLegacyStateDbPath(),
+    });
+  }
 
   const appState = new AppStateStore(storage);
   const admin = new AdminStore(storage);
@@ -156,7 +176,7 @@ async function ensureTelegramBotToken(
   const existing = secrets.getTelegramBotToken();
   if (existing) {
     const validated = await validateTelegramBotToken(existing);
-    if (validated) {
+    if (validated.ok) {
       return {
         token: existing,
         botUsername: validated.username,
@@ -180,8 +200,9 @@ async function ensureTelegramBotToken(
     const validating = spinner();
     validating.start("Validating Telegram bot token");
     const validated = await validateTelegramBotToken(token);
-    if (!validated) {
+    if (!validated.ok) {
       validating.stop("Telegram bot token validation failed");
+      note(validated.error, "Telegram");
       continue;
     }
 
@@ -195,33 +216,11 @@ async function ensureTelegramBotToken(
   }
 }
 
-async function validateTelegramBotToken(token: string): Promise<{ username: string | null } | null> {
-  try {
-    const bot = new Bot(token);
-    const me = await bot.api.getMe();
-    return { username: me.username ?? null };
-  } catch (error) {
-    if (error instanceof GrammyError) {
-      note(`Telegram returned an error: ${error.description}`, "Telegram");
-      return null;
-    }
-    if (error instanceof HttpError) {
-      note(`Unable to reach Telegram: ${error.message}`, "Telegram");
-      return null;
-    }
-    note(error instanceof Error ? error.message : String(error), "Telegram");
-    return null;
-  }
-}
-
 async function ensureCodexBin(appState: AppStateStore): Promise<string> {
-  const saved = appState.get("codex_bin");
-  for (const candidate of [saved, MAC_CODEX_BIN, "codex"]) {
-    if (!candidate) continue;
-    if (isWorkingCodexBin(candidate)) {
-      appState.set("codex_bin", candidate);
-      return candidate;
-    }
+  const detected = findWorkingCodexBinary(listCodexBinCandidates(appState.get("codex_bin")));
+  if (detected) {
+    appState.set("codex_bin", detected.command);
+    return detected.command;
   }
 
   note("Could not automatically find a working Codex binary.", "Codex");
@@ -235,22 +234,14 @@ async function ensureCodexBin(appState: AppStateStore): Promise<string> {
       note("Codex path cannot be empty.", "Codex");
       continue;
     }
-    if (!isWorkingCodexBin(candidate)) {
+    const probe = probeCodexBinary(candidate);
+    if (!probe.working) {
       note("That path is not an executable Codex binary.", "Codex");
       continue;
     }
-    appState.set("codex_bin", candidate);
-    return candidate;
+    appState.set("codex_bin", probe.command);
+    return probe.command;
   }
-}
-
-function isWorkingCodexBin(candidate: string): boolean {
-  if (candidate !== "codex" && !existsSync(candidate)) return false;
-  const result = spawnSync(candidate, ["--version"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return !result.error && result.status === 0;
 }
 
 async function ensureCodexLogin(codexBin: string): Promise<void> {
@@ -277,18 +268,6 @@ async function ensureCodexLogin(codexBin: string): Promise<void> {
   }
 }
 
-function readCodexLoginStatus(codexBin: string): { loggedIn: boolean; message: string } {
-  const result = spawnSync(codexBin, ["login", "status"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const message = [result.stdout, result.stderr].map((value) => value.trim()).filter(Boolean).join(" | ");
-  return {
-    loggedIn: result.status === 0 && /logged in/i.test(message),
-    message,
-  };
-}
-
 async function copyBootstrapCode(code: string): Promise<boolean> {
   try {
     await clipboard.write(code);
@@ -298,24 +277,73 @@ async function copyBootstrapCode(code: string): Promise<boolean> {
   }
 }
 
+export async function buildBootstrapBindingDisplay(input: {
+  binding: BootstrapBindingState;
+  botUsername: string | null;
+  workspace: string;
+  renderQrCode?: (content: string) => Promise<string>;
+}): Promise<BootstrapBindingDisplay> {
+  const projectBindCommand = `/project bind ${input.workspace}`;
+  const deepLink = input.botUsername ? buildTelegramStartLink(input.botUsername, input.binding.code) : null;
+  const qrCode = deepLink
+    ? await (input.renderQrCode ?? renderTerminalQrCode)(deepLink)
+    : null;
+
+  const lines = [
+    `Bot: ${input.botUsername ? `@${input.botUsername}` : "unknown"}`,
+    `Workspace: ${input.workspace}`,
+    `Binding code expires at: ${input.binding.expiresAt}`,
+    `Max failed attempts: ${input.binding.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
+    `Once the bot is bound, run this in your forum supergroup: ${projectBindCommand}`,
+    "",
+  ];
+
+  if (deepLink) {
+    lines.push(
+      "Open the deep link below or scan the QR code to finish the one-time admin binding.",
+      deepLink,
+      "",
+    );
+    if (qrCode) {
+      lines.push(qrCode, "");
+    }
+    lines.push(
+      "Fallback: send this one-time code to the bot in a private chat:",
+      input.binding.code,
+    );
+  } else {
+    lines.push(
+      "Open the bot in a private chat and send this one-time binding code:",
+      "",
+      input.binding.code,
+    );
+  }
+
+  return {
+    noteText: lines.join("\n"),
+    clipboardText: deepLink ?? input.binding.code,
+    deepLink,
+    qrCode,
+    projectBindCommand,
+  };
+}
+
 async function showBootstrapBindingNote(input: {
   binding: BootstrapBindingState;
   botUsername: string | null;
   workspace: string;
 }): Promise<void> {
-  const copied = await copyBootstrapCode(input.binding.code);
-  note(
-    [
-      `Bot: ${input.botUsername ? `@${input.botUsername}` : "unknown"}`,
-      `Workspace: ${input.workspace}`,
-      copied ? "Binding code copied to the clipboard." : "Failed to copy the binding code. Copy it manually.",
-      `Binding code expires at: ${input.binding.expiresAt}`,
-      `Max failed attempts: ${input.binding.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
-      "",
-      input.binding.code,
-    ].join("\n"),
-    "Admin Binding",
-  );
+  const display = await buildBootstrapBindingDisplay(input);
+  const copied = await copyBootstrapCode(display.clipboardText);
+  const clipboardStatus = display.deepLink
+    ? copied
+      ? "Binding link copied to the clipboard."
+      : "Failed to copy the binding link. Copy it manually."
+    : copied
+      ? "Binding code copied to the clipboard."
+      : "Failed to copy the binding code. Copy it manually.";
+
+  note([clipboardStatus, "", display.noteText].join("\n"), "Admin Binding");
 }
 
 function requirePromptValue(value: string | symbol): string {

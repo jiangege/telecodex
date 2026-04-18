@@ -31,16 +31,17 @@ export function authMiddleware(input: {
     const authorizedUserId = input.admin.getAuthorizedUserId();
     const binding = input.admin.getBindingCodeState();
     const messageText = ctx.message?.text?.trim();
+    const bindingInput = messageText ? extractBindingCodeInput(messageText) : null;
     if (authorizedUserId != null) {
       if (authorizedUserId === userId) {
         await next();
         return;
       }
 
-      if (ctx.chat?.type === "private" && binding?.mode === "rebind" && messageText) {
+      if (ctx.chat?.type === "private" && binding?.mode === "rebind" && bindingInput) {
         const handled = await handleBindingCodeMessage({
           ctx,
-          text: messageText,
+          text: bindingInput,
           binding,
           admin: input.admin,
           success: async () => {
@@ -74,10 +75,10 @@ export function authMiddleware(input: {
       return;
     }
 
-    if (messageText) {
+    if (bindingInput) {
       const handled = await handleBindingCodeMessage({
         ctx,
-        text: messageText,
+        text: bindingInput,
         binding,
         admin: input.admin,
         success: async () => {
@@ -113,10 +114,6 @@ async function handleBindingCodeMessage(input: {
     return true;
   }
 
-  if (input.text.startsWith("/")) {
-    return false;
-  }
-
   const attempt = input.admin.recordBindingCodeFailure();
   if (!attempt) {
     await replyError(input.ctx, "The binding code is no longer active. Issue a new one and try again.");
@@ -130,6 +127,14 @@ async function handleBindingCodeMessage(input: {
 
   await replyError(input.ctx, input.mismatchLabel, `Remaining attempts: ${attempt.remaining}`);
   return true;
+}
+
+function extractBindingCodeInput(text: string): string | null {
+  const match = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?\s*$/u);
+  if (match) {
+    return match[1] ?? null;
+  }
+  return text.startsWith("/") ? null : text;
 }
 
 async function deny(ctx: Context, text: string): Promise<void> {

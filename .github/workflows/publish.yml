@@ -5,10 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
-  id-token: write
-
 concurrency:
   group: npm-publish-${{ github.ref }}
   cancel-in-progress: false
@@ -16,6 +12,9 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v6
@@ -38,3 +37,12 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm publish
+
+  release:
+    name: Create GitHub Release
+    needs: publish
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ github.ref_name }}
