@@ -16,7 +16,6 @@ export function sessionFromContext(
     chatId: String(chatId),
     messageThreadId: messageThreadId == null ? null : String(messageThreadId),
     telegramTopicName: null,
-    defaultCwd: config.defaultCwd,
     defaultModel: config.defaultModel,
   });
 }

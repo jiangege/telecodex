@@ -38,7 +38,7 @@ test("FileStateStorage quarantines a corrupt sessions file and still loads healt
     const storage = new FileStateStorage(dir);
 
     assert.equal(storage.getAppState("authorized_user_id"), "101");
-    assert.equal(storage.getProject("-100")?.cwd, "/repo/app");
+    assert.equal(storage.getProject("-100")?.workingRoot, "/repo/app");
     assert.deepEqual(storage.listSessions(), []);
 
     const files = readdirSync(dir).sort();

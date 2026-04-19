@@ -12,7 +12,11 @@ import { wrapUserFacingHandler } from "../userFacingErrors.js";
 import { interruptActiveRun } from "./operationalHandlers.js";
 
 export function registerMessageHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, sessions, projects, codex, buffers, attachmentIo, logger } = deps;
+  const { bot, config, sessions, codex, buffers, attachmentIo, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.on("callback_query:data", wrapUserFacingHandler("callback_query:data", logger, async (ctx) => {
     const scoped = decodeStopCallbackData(ctx.callbackQuery.data);
@@ -26,7 +30,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const latest = await refreshSessionIfActiveTurnIsStale(session, sessions, codex, buffers, bot, logger);
@@ -57,7 +61,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
     });
     if (text.startsWith("/")) return;
 
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) {
       logger?.warn("ignored telegram text message because no scoped session was available", {
         ...contextLogFields(ctx),
@@ -70,7 +74,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
       text,
       session,
       sessions,
-      projects,
+      workspaces,
       codex,
       buffers,
       bot,
@@ -79,7 +83,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
   }));
 
   bot.on(["message:photo", "message:document"], wrapUserFacingHandler("message:attachment", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) {
       logger?.warn("ignored telegram attachment because no scoped session was available", {
         ...contextLogFields(ctx),
@@ -104,7 +108,7 @@ export function registerMessageHandlers(deps: BotHandlerDeps): void {
         prompt,
         session,
         sessions,
-        projects,
+        workspaces,
         codex,
         buffers,
         bot,

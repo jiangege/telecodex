@@ -2,33 +2,32 @@ import { replyDocument, replyError, replyNotice, replyUsage, codeField } from ".
 import { resolveExistingDirectory } from "../../pathScope.js";
 import {
   contextLogFields,
-  getProjectForContext,
+  getWorkspaceForContext,
   isPrivateChat,
   isSupergroupChat,
-  parseSubcommand,
   requireScopedSession,
 } from "../commandContext.js";
 import {
-  formatPrivateProjectList,
-  formatProjectStatus,
+  formatPrivateWorkspaceList,
+  formatWorkspaceStatus,
 } from "../helpText.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 
-const PROJECT_REQUIRED_MESSAGE = "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.";
+const WORKSPACE_REQUIRED_MESSAGE = "This supergroup has no working root yet.\nRun /workspace <absolute-path> first.";
 
-export function registerProjectHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, sessions, projects, logger } = deps;
+export function registerWorkspaceHandlers(deps: BotHandlerDeps): void {
+  const { bot, config, sessions, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
-  bot.command("project", wrapUserFacingHandler("project", logger, async (ctx) => {
-    const { command, args } = parseSubcommand(ctx.match.trim());
+  bot.command("workspace", wrapUserFacingHandler("workspace", logger, async (ctx) => {
+    const args = ctx.match.trim();
 
     if (isPrivateChat(ctx)) {
-      if (!command || command === "list" || command === "status") {
-        await replyNotice(ctx, formatPrivateProjectList(projects));
-        return;
-      }
-      await replyNotice(ctx, "Use /project bind inside a supergroup with topics enabled. Private chat is only for admin entry points.");
+      await replyNotice(ctx, formatPrivateWorkspaceList(workspaces));
       return;
     }
 
@@ -37,55 +36,55 @@ export function registerProjectHandlers(deps: BotHandlerDeps): void {
       return;
     }
 
-    if (!command || command === "status") {
-      const project = getProjectForContext(ctx, projects);
-      await replyNotice(ctx, project ? formatProjectStatus(project) : PROJECT_REQUIRED_MESSAGE);
+    if (!args) {
+      const workspace = getWorkspaceForContext(ctx, workspaces);
+      await replyNotice(ctx, workspace ? formatWorkspaceStatus(workspace) : WORKSPACE_REQUIRED_MESSAGE);
       return;
     }
 
-    if (command === "bind") {
-      if (!args) {
-        await replyUsage(ctx, "/project bind <absolute-path>");
-        return;
-      }
+    try {
+      const workingRoot = resolveExistingDirectory(args);
+      const workspace = workspaces.upsert({
+        chatId: String(ctx.chat.id),
+        workingRoot,
+      });
+      logger?.info("workspace root updated", {
+        ...contextLogFields(ctx),
+        workspace: workspace.name,
+        workingRoot: workspace.workingRoot,
+      });
+      await requireScopedSession(ctx, sessions, workspaces, config, { requireTopic: false });
+      await replyDocument(ctx, {
+        title: "Working root updated.",
+        fields: [
+          codeField("workspace", workspace.name),
+          codeField("working root", workspace.workingRoot),
+        ],
+        footer: "This supergroup now works from one shared working root, and each topic maps to one Codex thread.",
+      });
+    } catch (error) {
+      await replyError(ctx, error instanceof Error ? error.message : String(error));
+    }
+  }));
+
+  bot.command("project", wrapUserFacingHandler("project", logger, async (ctx) => {
+    if (isPrivateChat(ctx)) {
+      await replyNotice(ctx, "The project command was renamed. Use /workspace in the supergroup or private chat.");
+      return;
+    }
+    if (!isSupergroupChat(ctx)) {
+      await replyNotice(ctx, "Use telecodex inside a supergroup with forum topics enabled.");
+      return;
+    }
+    const args = ctx.match.trim();
+    if (!args) {
       try {
-        const cwd = resolveExistingDirectory(args);
-        const project = projects.upsert({
-          chatId: String(ctx.chat.id),
-          cwd,
-        });
-        logger?.info("project bound", {
-          ...contextLogFields(ctx),
-          project: project.name,
-          cwd: project.cwd,
-        });
-        const session = await requireScopedSession(ctx, sessions, projects, config, { requireTopic: false });
-        if (session && session.cwd !== project.cwd) {
-          sessions.setCwd(session.sessionKey, project.cwd);
-        }
-        await replyDocument(ctx, {
-          title: "Project binding updated.",
-          fields: [
-            codeField("project", project.name),
-            codeField("root", project.cwd),
-          ],
-          footer: "This supergroup now represents one project, and each topic maps to one Codex thread.",
-        });
+        await replyNotice(ctx, "The project command was renamed. Use /workspace to show or set the working root.");
       } catch (error) {
         await replyError(ctx, error instanceof Error ? error.message : String(error));
       }
       return;
     }
-
-    if (command === "unbind") {
-      logger?.info("project unbound", {
-        ...contextLogFields(ctx),
-      });
-      projects.remove(String(ctx.chat.id));
-      await replyNotice(ctx, "Removed the project binding for this supergroup.");
-      return;
-    }
-
-    await replyUsage(ctx, ["/project", "/project bind <absolute-path>", "/project unbind"]);
+    await replyNotice(ctx, "The project command was renamed. Use /workspace <absolute-path> to set the working root.");
   }));
 }

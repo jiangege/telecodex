@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { MessageBuffer } from "../telegram/messageBuffer.js";
 import { createFakeBot, createNoopLogger } from "./helpers.js";
+import { FakeClock } from "./harness/fakeClock.js";
 
 test("MessageBuffer completes long markdown replies without losing formatted chunks", async () => {
   const { bot, edited, sent } = createFakeBot();
@@ -71,6 +72,32 @@ test("MessageBuffer starts as starting and switches to working after turn start"
   await buffers.complete("thread-phase:turn-1", "done");
 });
 
+test("MessageBuffer shows elapsed shorthand while a run is active", async () => {
+  const { bot, sent, edited } = createFakeBot();
+  const clock = new FakeClock();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger(), {
+    scheduler: clock,
+  });
+
+  await buffers.create("thread-elapsed:turn-1", { chatId: 1, messageThreadId: 2 });
+  assert.equal(sent[0]?.text, "Starting...");
+
+  await clock.tick(1_000);
+  assert.match(edited.at(-1)?.text ?? "", /Starting\.\.\. 1s/);
+
+  buffers.markTurnStarted("thread-elapsed:turn-1");
+  await clock.tick(1);
+  assert.match(edited.at(-1)?.text ?? "", /Working\.\.\. 1s/);
+
+  await clock.tick(59_000);
+  assert.match(edited.at(-1)?.text ?? "", /Working\.\.\. 1m/);
+
+  await clock.tick(3_540_000);
+  assert.match(edited.at(-1)?.text ?? "", /Working\.\.\. 1h/);
+
+  await buffers.complete("thread-elapsed:turn-1", "done");
+});
+
 test("MessageBuffer renders structured working sections as Telegram entities", async () => {
   const { bot, edited } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
@@ -121,8 +148,8 @@ test("MessageBuffer keeps typing active until the run completes", async () => {
 test("MessageBuffer.complete sends markdown image references as Telegram media", async () => {
   const { bot, edited, sentPhotos } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
-  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
-  const imagePath = path.join(projectRoot, "mockup.png");
+  const workingRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
+  const imagePath = path.join(workingRoot, "mockup.png");
   writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   try {
@@ -132,8 +159,7 @@ test("MessageBuffer.complete sends markdown image references as Telegram media",
       `Result below.\n\n![Mockup](${imagePath})`,
       {
         mediaScope: {
-          projectRoot,
-          workingDirectory: projectRoot,
+          workingRoot,
         },
       },
     );
@@ -146,15 +172,15 @@ test("MessageBuffer.complete sends markdown image references as Telegram media",
     assert.equal(sentPhotos[0]?.options?.caption, "Mockup");
     assert.ok(((sentPhotos[0]?.options?.caption_entities as Array<{ type: string }> | undefined) ?? []).length === 0);
   } finally {
-    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(workingRoot, { recursive: true, force: true });
   }
 });
 
 test("MessageBuffer.complete keeps image alt text when the final reply only contains images", async () => {
   const { bot, edited, sentPhotos } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
-  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
-  const imagePath = path.join(projectRoot, "concept.png");
+  const workingRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-"));
+  const imagePath = path.join(workingRoot, "concept.png");
   writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   try {
@@ -164,8 +190,7 @@ test("MessageBuffer.complete keeps image alt text when the final reply only cont
       `![Generated concept](${imagePath})`,
       {
         mediaScope: {
-          projectRoot,
-          workingDirectory: projectRoot,
+          workingRoot,
         },
       },
     );
@@ -174,14 +199,14 @@ test("MessageBuffer.complete keeps image alt text when the final reply only cont
     assert.equal(sentPhotos.length, 1);
     assert.equal(sentPhotos[0]?.options?.caption, "Generated concept");
   } finally {
-    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(workingRoot, { recursive: true, force: true });
   }
 });
 
 test("MessageBuffer.complete degrades blocked images into fallback text instead of dropping them", async () => {
   const { bot, edited, sent, sentPhotos } = createFakeBot();
   const buffers = new MessageBuffer(bot, 1, createNoopLogger());
-  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-root-"));
+  const workingRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-root-"));
   const externalRoot = mkdtempSync(path.join(tmpdir(), "telecodex-media-external-"));
   const imagePath = path.join(externalRoot, "escaped.png");
   writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -193,8 +218,7 @@ test("MessageBuffer.complete degrades blocked images into fallback text instead 
       `Result below.\n\n![Escaped](${imagePath})`,
       {
         mediaScope: {
-          projectRoot,
-          workingDirectory: projectRoot,
+          workingRoot,
         },
       },
     );
@@ -203,7 +227,7 @@ test("MessageBuffer.complete degrades blocked images into fallback text instead 
     assert.equal(sentPhotos.length, 0);
     assert.ok(sent.some((message) => message.text.includes("Escaped")));
   } finally {
-    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(workingRoot, { recursive: true, force: true });
     rmSync(externalRoot, { recursive: true, force: true });
   }
 });

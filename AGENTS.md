@@ -25,7 +25,8 @@
 
 - `telecodex` is a Telegram bridge for local Codex built on `@openai/codex-sdk`.
 - It uses the local `codex` CLI through the SDK. It does not depend on `codex app-server`.
-- One Telegram forum supergroup maps to one project.
+- One Telegram forum supergroup maps to one workspace.
+- Each supergroup has one shared working root.
 - One topic inside that supergroup maps to one Codex thread.
 - Each topic has at most one active run.
 - Follow-up messages during an active run are ignored and should receive a fixed busy notice.
@@ -55,7 +56,7 @@
 - Keep run lifecycle logic out of command handlers. Streaming state transitions and SDK event projection belong under `src/bot/run`.
 - Keep store modules domain-specific:
   - `sessionStore` owns topic session state.
-  - `projectStore` owns supergroup-to-project bindings.
+  - `workspaceStore` owns supergroup-to-working-root bindings.
   - `adminStore` owns admin binding and handoff state.
   - `appStateStore` owns small global app state values.
 - Do not collapse unrelated state back into a single catch-all store.
@@ -74,5 +75,5 @@
 - Keep the UI message-driven. Do not reintroduce pin-based live state.
 - Preserve the boundary between durable state and runtime state.
 - Treat inbound Telegram images as supported Codex input, but do not assume there is a native SDK-level inline image output channel.
-- Assistant-generated file and image output sent back to Telegram must stay scoped to the bound project root. Do not turn telecodex into a general file exfiltration path.
+- Assistant-generated file and image output sent back to Telegram must stay scoped to the bound working root. Do not turn telecodex into a general file exfiltration path.
 - Prefer direct composition over extra wrapper layers. Add a new abstraction only when it removes real duplication or protects a real boundary.

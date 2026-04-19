@@ -1,7 +1,7 @@
 import path from "node:path";
 import { GrammyError, HttpError, InputFile, type Bot } from "grammy";
 import type { InlineKeyboardMarkup, MessageEntity } from "grammy/types";
-import { assertProjectScopedFile } from "../pathScope.js";
+import { assertWorkspaceScopedFile } from "../pathScope.js";
 import type { Logger } from "../runtime/logger.js";
 import type { RenderedTelegramCaption, RenderedTelegramText } from "./semantic.js";
 import { TELEGRAM_SAFE_TEXT_LIMIT } from "./splitMessage.js";
@@ -35,8 +35,7 @@ export interface TelegramMediaMessageInput {
 }
 
 export interface TelegramMediaScope {
-  projectRoot: string;
-  workingDirectory?: string | null;
+  workingRoot: string;
 }
 
 export interface TelegramReplyMarkupInput {
@@ -114,7 +113,7 @@ export async function sendMediaMessage(
   logger?: Logger,
   runtime: TelegramDeliveryRuntime = defaultDeliveryRuntime,
 ): Promise<{ message_id: number }> {
-  const attachment = new InputFile(resolveProjectScopedImagePath(input.source, input.scope));
+  const attachment = new InputFile(resolveWorkspaceScopedImagePath(input.source, input.scope));
   const options = {
     ...(input.messageThreadId == null ? {} : { message_thread_id: input.messageThreadId }),
     ...captionOptions(input.caption),
@@ -129,7 +128,7 @@ export async function sendMediaMessage(
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
       source: input.source,
-      projectRoot: input.scope.projectRoot,
+      workingRoot: input.scope.workingRoot,
     },
     {
       runtime,
@@ -415,23 +414,23 @@ function isLowSurrogate(value: number): boolean {
   return value >= 0xdc00 && value <= 0xdfff;
 }
 
-const PROJECT_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const WORKSPACE_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
-function resolveProjectScopedImagePath(source: string, scope: TelegramMediaScope): string {
+function resolveWorkspaceScopedImagePath(source: string, scope: TelegramMediaScope): string {
   const trimmed = source.trim();
   if (!trimmed) {
     throw new Error("Media source cannot be empty.");
   }
   if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("file://")) {
-    throw new Error("Only project-scoped local image paths are allowed.");
+    throw new Error("Only working-root-scoped local image paths are allowed.");
   }
 
-  const baseDirectory = scope.workingDirectory?.trim() ? path.resolve(scope.workingDirectory) : path.resolve(scope.projectRoot);
+  const baseDirectory = path.resolve(scope.workingRoot);
   const candidate = path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDirectory, trimmed);
-  const filePath = assertProjectScopedFile(candidate, scope.projectRoot);
+  const filePath = assertWorkspaceScopedFile(candidate, scope.workingRoot);
   const extension = path.extname(filePath).toLowerCase();
-  if (!PROJECT_IMAGE_EXTENSIONS.has(extension)) {
-    throw new Error(`Only project-scoped image files can be sent: ${trimmed}`);
+  if (!WORKSPACE_IMAGE_EXTENSIONS.has(extension)) {
+    throw new Error(`Only working-root-scoped image files can be sent: ${trimmed}`);
   }
   return filePath;
 }

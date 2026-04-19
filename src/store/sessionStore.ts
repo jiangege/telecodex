@@ -53,7 +53,7 @@ export class SessionStore {
     chatId: string;
     messageThreadId: string | null;
     telegramTopicName?: string | null;
-    defaultCwd: string;
+    defaultCwd?: string;
     defaultModel: string;
   }): TelegramSession {
     const existing = this.get(input.sessionKey);
@@ -66,7 +66,6 @@ export class SessionStore {
       messageThreadId: input.messageThreadId,
       telegramTopicName: input.telegramTopicName ?? null,
       codexThreadId: null,
-      cwd: input.defaultCwd,
       model: input.defaultModel,
       sandboxMode: DEFAULT_SESSION_PROFILE.sandboxMode,
       approvalPolicy: DEFAULT_SESSION_PROFILE.approvalPolicy,
@@ -131,10 +130,6 @@ export class SessionStore {
       return;
     }
     this.outputMessageBySession.set(sessionKey, messageId);
-  }
-
-  setCwd(sessionKey: string, cwd: string): void {
-    this.patchDurableSession(sessionKey, { cwd });
   }
 
   setModel(sessionKey: string, model: string): void {

@@ -5,8 +5,8 @@ import type { CodexSdkRuntime } from "../codex/sdkRuntime.js";
 import type { Logger } from "../runtime/logger.js";
 import type { AdminStore } from "../store/adminStore.js";
 import type { AppStateStore } from "../store/appStateStore.js";
-import type { ProjectStore } from "../store/projectStore.js";
 import type { SessionStore } from "../store/sessionStore.js";
+import type { WorkspaceStore } from "../store/workspaceStore.js";
 import type { TelegramAttachmentIo } from "../telegram/attachments.js";
 import { MessageBuffer, type MessageBufferOptions } from "../telegram/messageBuffer.js";
 import { authMiddleware } from "./auth.js";
@@ -17,7 +17,8 @@ export function wireBot(input: {
   bot: Bot;
   config: AppConfig;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces?: WorkspaceStore;
+  projects?: WorkspaceStore;
   admin: AdminStore;
   appState: AppStateStore;
   codex: CodexSdkRuntime;
@@ -33,7 +34,11 @@ export function wireBot(input: {
   initializeRuntime: () => Promise<void>;
   initializationPromise: Promise<void> | null;
 } {
-  const { bot, config, sessions, projects, admin, appState, codex, threadCatalog, logger, onAdminBound } = input;
+  const { bot, config, sessions, admin, appState, codex, threadCatalog, logger, onAdminBound } = input;
+  const workspaces = input.workspaces ?? input.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
   const buffers = new MessageBuffer(
     bot,
     config.updateIntervalMs,
@@ -66,7 +71,7 @@ export function wireBot(input: {
     bot,
     config,
     sessions,
-    projects,
+    workspaces,
     admin,
     appState,
     codex,
@@ -112,7 +117,8 @@ export function wireBot(input: {
 export function createBot(input: {
   config: AppConfig;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces?: WorkspaceStore;
+  projects?: WorkspaceStore;
   admin: AdminStore;
   appState: AppStateStore;
   codex: CodexSdkRuntime;

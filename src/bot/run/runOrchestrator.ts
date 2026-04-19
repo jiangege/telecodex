@@ -3,8 +3,8 @@ import type { Input } from "@openai/codex-sdk";
 import { applySessionRuntimeEvent } from "../../runtime/sessionRuntime.js";
 import { formatCodexErrorForUser } from "../../codex/errorFormatting.js";
 import type { Logger } from "../../runtime/logger.js";
-import type { ProjectStore } from "../../store/projectStore.js";
 import { type SessionStore, type StoredCodexInput, type TelegramSession } from "../../store/sessionStore.js";
+import type { WorkspaceStore } from "../../store/workspaceStore.js";
 import { MessageBuffer } from "../../telegram/messageBuffer.js";
 import { sendReplyNotice } from "../../telegram/replyDocument.js";
 import { CodexSdkRuntime, isAbortError } from "../../codex/sdkRuntime.js";
@@ -29,7 +29,8 @@ export async function handleUserText(input: {
   text: string;
   session: TelegramSession;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces?: WorkspaceStore;
+  projects?: WorkspaceStore;
   codex: CodexSdkRuntime;
   buffers: MessageBuffer;
   bot: Bot;
@@ -39,10 +40,11 @@ export async function handleUserText(input: {
     prompt: input.text,
     session: input.session,
     sessions: input.sessions,
-    projects: input.projects,
     codex: input.codex,
     buffers: input.buffers,
     bot: input.bot,
+    ...(input.workspaces ? { workspaces: input.workspaces } : {}),
+    ...(input.projects ? { projects: input.projects } : {}),
     ...(input.logger ? { logger: input.logger } : {}),
   });
 }
@@ -51,13 +53,18 @@ export async function handleUserInput(input: {
   prompt: StoredCodexInput;
   session: TelegramSession;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces?: WorkspaceStore;
+  projects?: WorkspaceStore;
   codex: CodexSdkRuntime;
   buffers: MessageBuffer;
   bot: Bot;
   logger?: Logger;
 }): Promise<HandleUserTextResult> {
-  const { prompt, sessions, projects, codex, buffers, bot, logger } = input;
+  const { prompt, sessions, codex, buffers, bot, logger } = input;
+  const workspaces = input.workspaces ?? input.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
   const session = await refreshSessionIfActiveTurnIsStale(input.session, sessions, codex, buffers, bot, logger);
 
   if (isSessionBusy(session) || codex.isRunning(session.sessionKey)) {
@@ -122,7 +129,7 @@ export async function handleUserInput(input: {
     sessionKey: session.sessionKey,
     prompt,
     sessions,
-    projects,
+    workspaces,
     codex,
     buffers,
     bot,
@@ -140,17 +147,28 @@ async function runSessionPrompt(input: {
   sessionKey: string;
   prompt: StoredCodexInput;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces?: WorkspaceStore;
+  projects?: WorkspaceStore;
   codex: CodexSdkRuntime;
   buffers: MessageBuffer;
   bot: Bot;
   bufferKey: string;
   logger?: Logger;
 }): Promise<void> {
-  const { sessionKey, prompt, sessions, projects, codex, buffers, bot, bufferKey, logger } = input;
+  const { sessionKey, prompt, sessions, codex, buffers, bot, bufferKey, logger } = input;
+  const workspaces = input.workspaces ?? input.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
   const session = sessions.get(sessionKey);
   if (!session) {
     await buffers.complete(bufferKey, "The topic session no longer exists. Send the message again if you still want to run it.");
+    return;
+  }
+
+  const workspace = workspaces.get(session.chatId);
+  if (!workspace) {
+    await buffers.fail(bufferKey, "This supergroup no longer has a working root. Run /workspace <absolute-path> and send the message again.");
     return;
   }
 
@@ -163,7 +181,7 @@ async function runSessionPrompt(input: {
       profile: {
         sessionKey,
         threadId: session.codexThreadId,
-        cwd: session.cwd,
+        cwd: workspace.workingRoot,
         model: session.model,
         sandboxMode: session.sandboxMode,
         approvalPolicy: session.approvalPolicy,
@@ -215,15 +233,13 @@ async function runSessionPrompt(input: {
       sessionKey,
       threadId: result.threadId,
     });
-    const projectRoot = projects.get(session.chatId)?.cwd ?? null;
     await buffers.complete(
       bufferKey,
       result.finalResponse || undefined,
-      projectRoot
+      workspace
         ? {
           mediaScope: {
-            projectRoot,
-            workingDirectory: session.cwd,
+            workingRoot: workspace.workingRoot,
           },
         }
         : undefined,

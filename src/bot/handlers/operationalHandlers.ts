@@ -4,7 +4,7 @@ import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
 import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
 import {
   contextLogFields,
-  getProjectForContext,
+  getWorkspaceForContext,
   hasTopicContext,
   isPrivateChat,
   parseSubcommand,
@@ -12,8 +12,7 @@ import {
 } from "../commandContext.js";
 import {
   formatHelpText,
-  formatPrivateStatus,
-  formatProjectStatus,
+  formatWorkspaceStatus,
   formatReasoningEffort,
 } from "../helpText.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
@@ -29,10 +28,14 @@ export async function interruptActiveRun(input: {
 }
 
 export function registerOperationalHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, sessions, projects, admin, codex, buffers, logger } = deps;
+  const { bot, config, sessions, admin, codex, buffers, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.command(["start", "help"], wrapUserFacingHandler("help", logger, async (ctx) => {
-    await replyNotice(ctx, formatHelpText(ctx, projects));
+    await replyNotice(ctx, formatHelpText(ctx, workspaces));
   }));
 
   bot.command("admin", wrapUserFacingHandler("admin", logger, async (ctx) => {
@@ -99,22 +102,25 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
 
   bot.command("status", wrapUserFacingHandler("status", logger, async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await replyNotice(ctx, formatPrivateStatus(admin, projects));
+      await replyNotice(
+        ctx,
+        "Use /admin in the bot private chat for binding and handoff status. /status is for workspace and topic runtime state.",
+      );
       return;
     }
 
-    const project = getProjectForContext(ctx, projects);
-    if (!project) {
-      await replyNotice(ctx, "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.");
+    const workspace = getWorkspaceForContext(ctx, workspaces);
+    if (!workspace) {
+      await replyNotice(ctx, "This supergroup has no working root yet.\nRun /workspace <absolute-path> first.");
       return;
     }
 
     if (!hasTopicContext(ctx)) {
-      await replyNotice(ctx, formatProjectStatus(project));
+      await replyNotice(ctx, formatWorkspaceStatus(workspace));
       return;
     }
 
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const latestSession = await refreshSessionIfActiveTurnIsStale(session, sessions, codex, buffers, bot, logger);
@@ -123,8 +129,8 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
     await replyDocument(ctx, {
       title: "Status",
       fields: [
-        codeField("project", project.name),
-        codeField("root", project.cwd),
+        codeField("workspace", workspace.name),
+        codeField("working root", workspace.workingRoot),
         codeField("thread", latestSession.codexThreadId ?? "not created"),
         textField("state", formatSessionRuntimeStatus(latestSession.runtimeStatus)),
         textField("state detail", latestSession.runtimeStatusDetail ?? "none"),
@@ -133,7 +139,6 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
         codeField("active run thread", activeRun?.threadId ?? "none"),
         textField("active run last event", activeRun?.lastEventType ?? "none"),
         textField("active run last update", activeRun ? formatIsoTimestamp(activeRun.lastEventAt) : "none"),
-        codeField("cwd", latestSession.cwd),
         textField("preset", presetFromProfile(latestSession)),
         textField("sandbox", latestSession.sandboxMode),
         textField("approval", latestSession.approvalPolicy),
@@ -149,7 +154,7 @@ export function registerOperationalHandlers(deps: BotHandlerDeps): void {
   }));
 
   bot.command("stop", wrapUserFacingHandler("stop", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const latest = await refreshSessionIfActiveTurnIsStale(session, sessions, codex, buffers, bot, logger);

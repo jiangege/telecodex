@@ -16,8 +16,8 @@ import { AdminStore, BINDING_CODE_MAX_ATTEMPTS } from "../store/adminStore.js";
 import { AppStateStore } from "../store/appStateStore.js";
 import { FileStateStorage } from "../store/fileState.js";
 import { migrateLegacySqliteState } from "../store/legacyMigration.js";
-import { ProjectStore } from "../store/projectStore.js";
 import { SessionStore } from "../store/sessionStore.js";
+import { WorkspaceStore } from "../store/workspaceStore.js";
 import { getLegacyStateDbPath, getStateDir } from "./appPaths.js";
 import { generateBindingCode } from "./bindingCodes.js";
 import {
@@ -39,7 +39,7 @@ import {
 export interface BootstrapResult {
   config: AppConfig;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces: WorkspaceStore;
   admin: AdminStore;
   appState: AppStateStore;
   bootstrapCode: string | null;
@@ -49,7 +49,7 @@ export interface BootstrapResult {
 export interface RuntimePersistence {
   storage: FileStateStorage;
   sessions: SessionStore;
-  projects: ProjectStore;
+  workspaces: WorkspaceStore;
   admin: AdminStore;
   appState: AppStateStore;
   secrets: SecretStore;
@@ -66,13 +66,13 @@ export interface BootstrapBindingDisplay {
   clipboardText: string;
   deepLink: string | null;
   qrCode: string | null;
-  projectBindCommand: string;
+  workspaceCommand: string;
 }
 
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   intro("telecodex");
 
-  const { sessions, projects, admin, appState, secrets } = initializeRuntimePersistence();
+  const { sessions, workspaces, admin, appState, secrets } = initializeRuntimePersistence();
 
   const codexBin = await ensureCodexBin(appState);
   await ensureCodexLogin(codexBin);
@@ -101,7 +101,7 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   return {
     config,
     sessions,
-    projects,
+    workspaces,
     admin,
     appState,
     bootstrapCode,
@@ -129,7 +129,7 @@ export function initializeRuntimePersistence(input?: {
   const appState = new AppStateStore(storage);
   const admin = new AdminStore(storage);
   const sessions = new SessionStore(storage);
-  const projects = new ProjectStore(storage);
+  const workspaces = new WorkspaceStore(storage);
   const secrets = new SecretStore(appState, {
     allowPlaintextFallback: input?.allowPlaintextFallback ?? process.env[PLAINTEXT_TOKEN_FALLBACK_ENV] === "1",
   });
@@ -137,7 +137,7 @@ export function initializeRuntimePersistence(input?: {
   return {
     storage,
     sessions,
-    projects,
+    workspaces,
     admin,
     appState,
     secrets,
@@ -283,7 +283,7 @@ export async function buildBootstrapBindingDisplay(input: {
   workspace: string;
   renderQrCode?: (content: string) => Promise<string>;
 }): Promise<BootstrapBindingDisplay> {
-  const projectBindCommand = `/project bind ${input.workspace}`;
+  const workspaceCommand = `/workspace ${input.workspace}`;
   const deepLink = input.botUsername ? buildTelegramStartLink(input.botUsername, input.binding.code) : null;
   const qrCode = deepLink
     ? await (input.renderQrCode ?? renderTerminalQrCode)(deepLink)
@@ -294,7 +294,7 @@ export async function buildBootstrapBindingDisplay(input: {
     `Workspace: ${input.workspace}`,
     `Binding code expires at: ${input.binding.expiresAt}`,
     `Max failed attempts: ${input.binding.maxAttempts ?? BINDING_CODE_MAX_ATTEMPTS}`,
-    `Once the bot is bound, run this in your forum supergroup: ${projectBindCommand}`,
+    `Once the bot is bound, run this in your forum supergroup: ${workspaceCommand}`,
     "",
   ];
 
@@ -324,7 +324,7 @@ export async function buildBootstrapBindingDisplay(input: {
     clipboardText: deepLink ?? input.binding.code,
     deepLink,
     qrCode,
-    projectBindCommand,
+    workspaceCommand,
   };
 }
 

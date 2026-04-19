@@ -119,15 +119,15 @@ test("/thread resume binds the current topic to a known thread id", async () => 
       buffers: {} as never,
     });
 
-    const replies: string[] = [];
+    const replies: Array<{ text: string; options: unknown }> = [];
     const handler = commands.get("thread");
     assert.ok(handler);
     await handler!({
       chat: { id: -100, type: "supergroup" },
       message: { message_thread_id: 52 },
       match: "resume thread-401",
-      reply: async (text: string) => {
-        replies.push(text);
+      reply: async (text: string, options?: unknown) => {
+        replies.push({ text, options: options ?? null });
         return undefined;
       },
     });
@@ -137,7 +137,74 @@ test("/thread resume binds the current topic to a known thread id", async () => 
     const updated = store.get("-100:52");
     assert.equal(updated?.codexThreadId, "thread-401");
     assert.equal(updated?.runtimeStatus, "idle");
-    assert.match(replies.at(-1) ?? "", /Current topic is now bound to the existing thread id/);
+    const reply = replies.at(-1);
+    assert.ok(reply);
+    const options = reply.options as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+    };
+    const output = reply.text;
+    assert.match(output, /Current topic is now bound to the existing thread id/);
+    assert.match(output, /thread: thread-401/);
+    assert.match(output, /codex resume --include-non-interactive 'thread-401'/);
+    assert.ok(hasEntity(options.entities, output, "pre", `cd '${process.cwd()}' && codex resume --include-non-interactive 'thread-401'`));
+  } finally {
+    cleanup();
+  }
+});
+
+test("/thread shows a pc resume command for the current SDK thread", async () => {
+  const { store, projects, admin, appState, cleanup, bot, commands, threadCatalog, codex } = createDeps();
+  try {
+    const projectRoot = process.cwd();
+    projects.upsert({ chatId: "-100", cwd: projectRoot });
+    const session = store.getOrCreate({
+      sessionKey: "-100:61",
+      chatId: "-100",
+      messageThreadId: "61",
+      telegramTopicName: "Phone Thread",
+      defaultCwd: projectRoot,
+      defaultModel: "gpt-5.4",
+    });
+    store.bindThread(session.sessionKey, "thread-sdk-1");
+
+    registerHandlers({
+      bot,
+      config: createConfig(),
+      sessions: store,
+      projects,
+      admin,
+      appState,
+      codex: codex as never,
+      threadCatalog,
+      buffers: {} as never,
+    });
+
+    const replies: Array<{ text: string; options: unknown }> = [];
+    const handler = commands.get("thread");
+    assert.ok(handler);
+    await handler!({
+      chat: { id: -100, type: "supergroup" },
+      message: { message_thread_id: 61 },
+      match: "",
+      reply: async (text: string, options?: unknown) => {
+        replies.push({ text, options: options ?? null });
+        return undefined;
+      },
+    });
+
+    const reply = replies.at(-1);
+    assert.ok(reply);
+    const options = reply.options as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+    };
+    const output = reply.text;
+    assert.match(output, /Current thread/);
+    assert.match(output, /pc resume:\n\ncd '/);
+    assert.match(output, /codex resume --include-non-interactive 'thread-sdk-1'/);
+    assert.match(output, /Use \/status for runtime state and recent SDK events/);
+    assert.match(output, /SDK-created threads may not appear in Codex Desktop yet/);
+    assert.doesNotMatch(output, /\nstate:/);
+    assert.ok(hasEntity(options.entities, output, "pre", `cd '${projectRoot}' && codex resume --include-non-interactive 'thread-sdk-1'`));
   } finally {
     cleanup();
   }
@@ -215,18 +282,21 @@ test("/thread list shows saved project threads from the Codex session catalog", 
     assert.equal(options.reply_markup, undefined);
     const output = reply.text;
     assert.match(output, /Saved Codex threads/);
-    assert.match(output, /project: telecodex/);
+    assert.match(output, /workspace: telecodex/);
     assert.match(output, /First saved thread/);
     assert.match(output, /id: thread-1/);
     assert.match(output, /resume: \/thread resume thread-1/);
+    assert.match(output, /pc resume:\n\ncd '/);
+    assert.match(output, /codex resume --include-non-interactive 'thread-1'/);
     assert.match(output, /Second saved thread/);
     assert.match(output, /bound: Bound Topic/);
-    assert.match(output, /Copy an id or resume command from the code-formatted fields above/);
+    assert.match(output, /Copy a thread id or the pc resume command above/);
     assert.ok(hasEntity(options.entities, output, "bold", "Saved Codex threads"));
     assert.ok(hasEntity(options.entities, output, "code", "telecodex"));
     assert.ok(hasEntity(options.entities, output, "bold", "1. First saved thread"));
     assert.ok(hasEntity(options.entities, output, "code", "thread-1"));
     assert.ok(hasEntity(options.entities, output, "code", "/thread resume thread-1"));
+    assert.ok(hasEntity(options.entities, output, "pre", `cd '${projectRoot}' && codex resume --include-non-interactive 'thread-1'`));
   } finally {
     cleanup();
   }

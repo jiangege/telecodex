@@ -23,7 +23,6 @@ export function sessionLogFields(session: TelegramSession): Record<string, strin
     sessionKey: session.sessionKey,
     chatId: session.chatId,
     messageThreadId: session.messageThreadId,
-    cwd: session.cwd,
     model: session.model,
     sandboxMode: session.sandboxMode,
     approvalPolicy: session.approvalPolicy,

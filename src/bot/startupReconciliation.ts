@@ -46,21 +46,16 @@ async function syncBotCommands(bot: Bot, logger?: Logger): Promise<void> {
 const privateCommands = [
   { command: "start", description: "Show help" },
   { command: "help", description: "Show help" },
-  { command: "status", description: "Show bot status" },
   { command: "admin", description: "Show or hand off admin access" },
 ] as const;
 
 const groupCommands = [
   { command: "help", description: "Show help" },
-  { command: "status", description: "Show project or topic status" },
-  { command: "project", description: "Show, bind, or unbind project" },
+  { command: "status", description: "Show workspace or topic status" },
+  { command: "workspace", description: "Show or set the working root" },
   { command: "thread", description: "List, resume, or create topics" },
   { command: "stop", description: "Fallback stop for the active run" },
-  { command: "cwd", description: "Show or set topic directory" },
   { command: "mode", description: "Switch preset mode" },
-  { command: "sandbox", description: "Show or set sandbox mode" },
-  { command: "approval", description: "Show or set approval mode" },
-  { command: "yolo", description: "Enable or disable YOLO mode" },
   { command: "model", description: "Show or set model" },
   { command: "effort", description: "Show or set reasoning effort" },
   { command: "web", description: "Show or set web search" },

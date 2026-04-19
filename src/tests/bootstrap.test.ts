@@ -71,7 +71,7 @@ test("buildBootstrapBindingDisplay includes a deep link and QR code when the bot
   assert.equal(display.qrCode, "QR-CODE");
   assert.equal(display.clipboardText, "https://t.me/telecodex_bot?start=bind-123");
   assert.match(display.noteText, /QR-CODE/);
-  assert.match(display.noteText, /\/project bind \/tmp\/project/);
+  assert.match(display.noteText, /\/workspace \/tmp\/project/);
   assert.match(display.noteText, /Fallback: send this one-time code/);
 });
 

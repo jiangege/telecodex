@@ -39,3 +39,17 @@ test("runTelecodexCli prints help for unknown commands", async () => {
   assert.equal(exitCode, 1);
   assert.match(lines.join("\n"), /telecodex doctor/);
 });
+
+test("runTelecodexCli starts the runtime when no subcommand is given", async () => {
+  let started = 0;
+  const exitCode = await runTelecodexCli([], {
+    startTelecodex: async () => {
+      started += 1;
+    },
+    runDoctor: async () => 0,
+    writeLine: () => undefined,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(started, 1);
+});

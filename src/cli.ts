@@ -56,7 +56,7 @@ export async function runTelecodexCli(
 async function main(): Promise<void> {
   try {
     const exitCode = await runTelecodexCli(process.argv.slice(2));
-    process.exit(exitCode);
+    process.exitCode = exitCode;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

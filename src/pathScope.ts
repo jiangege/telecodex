@@ -52,20 +52,20 @@ export function resolveExistingFile(input: string): string {
   return canonicalizeBoundaryPath(resolved);
 }
 
-export function assertProjectScopedPath(input: string, projectRoot: string): string {
+export function assertWorkspaceScopedPath(input: string, workingRoot: string): string {
   const resolved = resolveExistingDirectory(input);
-  const canonicalRoot = resolveExistingDirectory(projectRoot);
+  const canonicalRoot = resolveExistingDirectory(workingRoot);
   if (!isPathWithinRoot(resolved, canonicalRoot)) {
-    throw new Error(["Path must stay within the project root.", `project root: ${projectRoot}`, `input: ${resolved}`].join("\n"));
+    throw new Error(["Path must stay within the working root.", `working root: ${workingRoot}`, `input: ${resolved}`].join("\n"));
   }
   return resolved;
 }
 
-export function assertProjectScopedFile(input: string, projectRoot: string): string {
+export function assertWorkspaceScopedFile(input: string, workingRoot: string): string {
   const resolved = resolveExistingFile(input);
-  const canonicalRoot = resolveExistingDirectory(projectRoot);
+  const canonicalRoot = resolveExistingDirectory(workingRoot);
   if (!isPathWithinRoot(resolved, canonicalRoot)) {
-    throw new Error(["File must stay within the project root.", `project root: ${projectRoot}`, `input: ${resolved}`].join("\n"));
+    throw new Error(["File must stay within the working root.", `working root: ${workingRoot}`, `input: ${resolved}`].join("\n"));
   }
   return resolved;
 }
@@ -84,3 +84,6 @@ export function canonicalizeBoundaryPath(input: string): string {
     return resolved;
   }
 }
+
+export const assertProjectScopedPath = assertWorkspaceScopedPath;
+export const assertProjectScopedFile = assertWorkspaceScopedFile;

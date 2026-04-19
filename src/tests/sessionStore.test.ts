@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -71,10 +71,8 @@ test("file-backed session state keeps multi-topic bindings isolated across reloa
     );
     assert.equal(secondStore.get("-100:81")?.codexThreadId, "thread-a");
     assert.equal(secondStore.get("-100:81")?.telegramTopicName, "Topic A");
-    assert.equal(secondStore.get("-100:81")?.cwd, "/repo/a");
     assert.equal(secondStore.get("-100:82")?.codexThreadId, null);
     assert.equal(secondStore.get("-100:82")?.telegramTopicName, "Topic B Renamed");
-    assert.equal(secondStore.get("-100:82")?.cwd, "/repo/b");
     assert.deepEqual(secondStore.get("-100:82")?.additionalDirectories, ["/repo/shared"]);
 
     secondStore.remove("-100:81");
@@ -87,6 +85,34 @@ test("file-backed session state keeps multi-topic bindings isolated across reloa
       thirdStore.listTopicSessions().map((session) => session.sessionKey),
       ["-100:82"],
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("new sessions do not persist the legacy cwd field", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "telecodex-session-no-cwd-"));
+  const stateDir = path.join(dir, "state");
+  try {
+    const store = new SessionStore(new FileStateStorage(stateDir));
+    const session = store.getOrCreate({
+      sessionKey: "-100:83",
+      chatId: "-100",
+      messageThreadId: "83",
+      telegramTopicName: "Topic C",
+      defaultCwd: "/legacy/cwd",
+      defaultModel: "gpt-5.4",
+    });
+    store.bindThread(session.sessionKey, "thread-83");
+    await store.flush();
+
+    const persisted = JSON.parse(readFileSync(path.join(stateDir, "sessions.json"), "utf8")) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    const storedSession = persisted.sessions.find((entry) => entry.sessionKey === session.sessionKey);
+    assert.ok(storedSession);
+    assert.equal("cwd" in storedSession, false);
+    assert.equal(storedSession.cwd, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

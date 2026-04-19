@@ -20,7 +20,7 @@ test("transcript e2e runs a topic message through preparing, working, and final 
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("inspect the project", 301);
     await harness.waitFor(() => harness.codex.calls.length === 1);
 
@@ -89,7 +89,7 @@ test("transcript e2e keeps placeholder working drafts out of Telegram progress m
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("inspect the working placeholder", 308);
     await harness.waitFor(() =>
       harness.editMessageTextCalls.some((call) =>
@@ -129,7 +129,7 @@ test("transcript e2e ignores a follow-up message while the active run is still b
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("first task", 302);
     await harness.waitFor(() => harness.codex.isRunning("-1003940193016:302"));
 
@@ -162,7 +162,7 @@ test("transcript e2e interrupts an active run with the Stop button", async () =>
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("long task", 309);
     await harness.waitFor(() => harness.codex.getActiveRun("-1003940193016:309")?.lastEventType === "turn.started");
 
@@ -199,7 +199,7 @@ test("transcript e2e interrupts an active run with /stop", async () => {
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("long task", 303);
     await harness.waitFor(() => harness.codex.getActiveRun("-1003940193016:303")?.lastEventType === "turn.started");
 
@@ -240,7 +240,7 @@ test("transcript e2e supports /thread resume and /thread new without creating Te
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupCommand("thread", "resume thread-existing-777", 304);
 
     assert.equal(harness.store.get("-1003940193016:304")?.codexThreadId, "thread-existing-777");
@@ -284,7 +284,7 @@ test("transcript e2e splits long markdown final replies into valid Telegram enti
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("return a long answer", 305);
     await harness.waitFor(() => harness.store.get("-1003940193016:305")?.runtimeStatus === "idle");
 
@@ -315,7 +315,7 @@ test("transcript e2e sends Telegram images to Codex as local_image input", async
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupPhoto(306, {
       caption: "inspect this image",
       photo: [{ file_id: "photo-e2e", width: 1280, height: 720 }],
@@ -360,7 +360,7 @@ test("transcript e2e sends assistant markdown images back to Telegram media", as
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${projectRoot}`);
+    await harness.sendGroupCommand("workspace", `${projectRoot}`);
     await harness.sendGroupText("generate an image", 309);
     await harness.waitFor(() => harness.store.get("-1003940193016:309")?.runtimeStatus === "idle");
 
@@ -399,7 +399,7 @@ test("transcript e2e sanitizes upstream Codex HTML errors before sending them to
   });
 
   try {
-    await harness.sendGroupCommand("project", `bind ${process.cwd()}`);
+    await harness.sendGroupCommand("workspace", `${process.cwd()}`);
     await harness.sendGroupText("trigger upstream error", 307);
     await harness.waitFor(() => harness.store.get("-1003940193016:307")?.runtimeStatus === "failed");
 

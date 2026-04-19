@@ -1,10 +1,8 @@
 import type { CommandContext, Context } from "grammy";
-import path from "node:path";
-import { formatSessionRuntimeStatus } from "../../runtime/sessionRuntime.js";
-import { codeField, replyDocument, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
+import { codeBlockField, codeField, replyDocument, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
 import {
   contextLogFields,
-  getProjectForContext,
+  getWorkspaceForContext,
   hasTopicContext,
   isPrivateChat,
   parseSubcommand,
@@ -15,32 +13,46 @@ import { isSessionBusy } from "../sessionState.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
 import { makeSessionKey, type SessionStore, type TelegramSession } from "../../store/sessionStore.js";
 
-const PROJECT_REQUIRED_MESSAGE = "This supergroup has no project bound yet.\nRun /project bind <absolute-path> first.";
-type ProjectCommandContext = CommandContext<Context>;
+const WORKSPACE_REQUIRED_MESSAGE = "This supergroup has no working root yet.\nRun /workspace <absolute-path> first.";
+type WorkspaceCommandContext = CommandContext<Context>;
 
 export function registerThreadHandlers(deps: BotHandlerDeps): void {
-  const { bot, config, sessions, projects, logger } = deps;
+  const { bot, config, sessions, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.command("thread", wrapUserFacingHandler("thread", logger, async (ctx) => {
     if (isPrivateChat(ctx)) {
-      await replyNotice(ctx, "The thread command is only available inside project supergroups.");
+      await replyNotice(ctx, "The thread command is only available inside workspace supergroups.");
       return;
     }
 
     const { command, args } = parseSubcommand(ctx.match.trim());
     if (!command) {
       if (hasTopicContext(ctx)) {
-        const session = await requireScopedSession(ctx, sessions, projects, config);
-        if (!session) return;
+        const workspace = getWorkspaceForContext(ctx, workspaces);
+        const session = await requireScopedSession(ctx, sessions, workspaces, config);
+        if (!workspace || !session) return;
         await replyDocument(ctx, {
           title: "Current thread",
           fields: [
             codeField("thread", session.codexThreadId ?? "not created"),
-            textField("state", formatSessionRuntimeStatus(session.runtimeStatus)),
-            textField("state detail", session.runtimeStatusDetail ?? "none"),
-            codeField("cwd", session.cwd),
+            ...(session.codexThreadId
+              ? [codeBlockField("pc resume", buildCliResumeCommand(workspace.workingRoot, session.codexThreadId))]
+              : []),
           ],
-          footer: ["Manage threads in this project:", "/thread list", "/thread new", "/thread resume <threadId>"],
+          footer: [
+            "Manage threads in this workspace:",
+            "/thread list",
+            "/thread new",
+            "/thread resume <threadId>",
+            "Use /status for runtime state and recent SDK events.",
+            ...(session.codexThreadId
+              ? ["SDK-created threads may not appear in Codex Desktop yet. Use the pc resume command above on your Mac or PC shell."]
+              : []),
+          ],
         });
         return;
       }
@@ -55,7 +67,7 @@ export function registerThreadHandlers(deps: BotHandlerDeps): void {
     }
 
     if (command === "list") {
-      await listProjectThreads(ctx, deps);
+      await listWorkspaceThreads(ctx, deps);
       return;
     }
     if (command === "resume") {
@@ -102,34 +114,38 @@ export function registerThreadHandlers(deps: BotHandlerDeps): void {
 }
 
 async function resumeThreadInCurrentTopic(
-  ctx: ProjectCommandContext,
+  ctx: WorkspaceCommandContext,
   deps: BotHandlerDeps,
   threadId: string,
 ): Promise<void> {
-  const { config, sessions, projects, logger, threadCatalog } = deps;
-  const project = getProjectForContext(ctx, projects);
-  if (!project) {
-    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
+  const { config, sessions, logger, threadCatalog } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
+  const workspace = getWorkspaceForContext(ctx, workspaces);
+  if (!workspace) {
+    await replyNotice(ctx, WORKSPACE_REQUIRED_MESSAGE);
     return;
   }
 
-  const session = await requireScopedSession(ctx, sessions, projects, config);
+  const session = await requireScopedSession(ctx, sessions, workspaces, config);
   if (!session) return;
   const latest = await requireIdleThreadMutationTarget(ctx, deps, session);
   if (!latest) return;
 
   const thread = await threadCatalog.findProjectThreadById({
-    projectRoot: project.cwd,
+    projectRoot: workspace.workingRoot,
     threadId,
   });
   if (!thread) {
     await replyDocument(ctx, {
-      title: "Could not find a saved Codex thread with that id under this project.",
+      title: "Could not find a saved Codex thread with that id under this working root.",
       fields: [
-        codeField("project root", project.cwd),
+        codeField("working root", workspace.workingRoot),
         codeField("thread", threadId),
       ],
-      footer: "Run /thread list to inspect the saved project threads first.",
+      footer: "Run /thread list to inspect the saved workspace threads first.",
     });
     return;
   }
@@ -156,18 +172,22 @@ async function resumeThreadInCurrentTopic(
       textField("topic", updated.telegramTopicName ?? "current topic"),
       textField("topic id", updated.messageThreadId ?? "unknown"),
       codeField("thread", thread.id),
-      codeField("cwd", updated.cwd),
+      codeBlockField("pc resume", buildCliResumeCommand(workspace.workingRoot, thread.id)),
     ],
     footer: "Future messages in this topic will continue on that thread through the Codex SDK.",
   });
 }
 
 async function startFreshThreadInCurrentTopic(
-  ctx: ProjectCommandContext,
+  ctx: WorkspaceCommandContext,
   deps: BotHandlerDeps,
 ): Promise<void> {
-  const { config, sessions, projects, logger } = deps;
-  const session = await requireScopedSession(ctx, sessions, projects, config);
+  const { config, sessions, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
+  const session = await requireScopedSession(ctx, sessions, workspaces, config);
   if (!session) return;
   const latest = await requireIdleThreadMutationTarget(ctx, deps, session);
   if (!latest) return;
@@ -189,28 +209,31 @@ async function startFreshThreadInCurrentTopic(
       textField("topic", updated.telegramTopicName ?? "current topic"),
       textField("topic id", updated.messageThreadId ?? "unknown"),
       codeField("thread", "not created"),
-      codeField("cwd", updated.cwd),
     ],
     footer: "Your next normal message in this topic will start a new Codex thread.",
   });
 }
 
-async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDeps): Promise<void> {
-  const { projects, sessions, threadCatalog } = deps;
-  const project = getProjectForContext(ctx, projects);
-  if (!project) {
-    await replyNotice(ctx, PROJECT_REQUIRED_MESSAGE);
+async function listWorkspaceThreads(ctx: WorkspaceCommandContext, deps: BotHandlerDeps): Promise<void> {
+  const { sessions, threadCatalog } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
+  const workspace = getWorkspaceForContext(ctx, workspaces);
+  if (!workspace) {
+    await replyNotice(ctx, WORKSPACE_REQUIRED_MESSAGE);
     return;
   }
 
   const threads = await threadCatalog.listProjectThreads({
-    projectRoot: project.cwd,
+    projectRoot: workspace.workingRoot,
     limit: 8,
   });
   if (threads.length === 0) {
     await replyDocument(ctx, {
-      title: "No saved Codex threads were found for this project yet.",
-      fields: [codeField("project root", project.cwd)],
+      title: "No saved Codex threads were found for this workspace yet.",
+      fields: [codeField("working root", workspace.workingRoot)],
     });
     return;
   }
@@ -218,18 +241,17 @@ async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDe
   await replyDocument(ctx, {
     title: "Saved Codex threads",
     fields: [
-      codeField("project", project.name),
-      codeField("root", project.cwd),
+      codeField("workspace", workspace.name),
+      codeField("working root", workspace.workingRoot),
     ],
     sections: threads.map((thread, index) => {
-      const relativeCwd = path.relative(project.cwd, thread.cwd) || ".";
       const bound = sessions.getByThreadId(thread.id);
       return {
         title: `${index + 1}. ${thread.preview}`,
         fields: [
           codeField("id", thread.id),
           codeField("resume", `/thread resume ${thread.id}`),
-          codeField("cwd", relativeCwd),
+          codeBlockField("pc resume", buildCliResumeCommand(workspace.workingRoot, thread.id)),
           textField("updated", thread.updatedAt),
           textField("source", thread.source ?? "unknown"),
           ...(bound
@@ -238,12 +260,12 @@ async function listProjectThreads(ctx: ProjectCommandContext, deps: BotHandlerDe
         ],
       };
     }),
-    footer: "Copy an id or resume command from the code-formatted fields above.",
+    footer: "Copy a thread id or the pc resume command above.",
   });
 }
 
 async function requireIdleThreadMutationTarget(
-  ctx: ProjectCommandContext,
+  ctx: WorkspaceCommandContext,
   deps: BotHandlerDeps,
   session: TelegramSession,
 ): Promise<TelegramSession | null> {
@@ -263,4 +285,12 @@ function resetTopicSessionState(sessions: SessionStore, sessionKey: string): voi
     detail: null,
     updatedAt: new Date().toISOString(),
   });
+}
+
+function buildCliResumeCommand(workingRoot: string, threadId: string): string {
+  return `cd ${shellQuote(workingRoot)} && codex resume --include-non-interactive ${shellQuote(threadId)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }

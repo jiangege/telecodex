@@ -15,15 +15,15 @@ import {
 import { parseCodexConfigOverrides } from "../../codex/configOverrides.js";
 import type { BotHandlerDeps } from "../handlerDeps.js";
 import {
-  getProjectForContext,
+  getWorkspaceForContext,
   requireScopedSession,
 } from "../commandContext.js";
 import { formatProfileReply, formatReasoningEffort } from "../helpText.js";
 import { codeField, replyDocument, replyError, replyNotice, replyUsage, textField } from "../../telegram/replyDocument.js";
 import { wrapUserFacingHandler } from "../userFacingErrors.js";
-import { assertProjectScopedPath, resolveExistingDirectory } from "../../pathScope.js";
+import { assertWorkspaceScopedPath, resolveExistingDirectory } from "../../pathScope.js";
 
-type SessionConfigDeps = Pick<BotHandlerDeps, "bot" | "config" | "sessions" | "projects" | "appState" | "codex" | "logger">;
+type SessionConfigDeps = Pick<BotHandlerDeps, "bot" | "config" | "sessions" | "workspaces" | "projects" | "appState" | "codex" | "logger">;
 
 export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
   registerDirectoryHandlers(deps);
@@ -33,40 +33,28 @@ export function registerSessionConfigHandlers(deps: BotHandlerDeps): void {
 }
 
 function registerDirectoryHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, sessions, projects, logger } = deps;
+  const { bot, logger } = deps;
 
   bot.command("cwd", wrapUserFacingHandler("cwd", logger, async (ctx) => {
-    const project = getProjectForContext(ctx, projects);
-    const session = await requireScopedSession(ctx, sessions, projects, config);
-    if (!project || !session) return;
-
     const cwd = ctx.match.trim();
-    if (!cwd) {
-      await replyCurrentSetting(ctx, "Current directory", [
-        codeField("cwd", session.cwd),
-        codeField("project root", project.cwd),
-      ]);
-      return;
-    }
-
-    try {
-      const allowed = assertProjectScopedPath(cwd, project.cwd);
-      sessions.setCwd(session.sessionKey, allowed);
-      await replyDocument(ctx, {
-        title: "Set cwd",
-        fields: [codeField("cwd", allowed)],
-      });
-    } catch (error) {
-      await replyError(ctx, error instanceof Error ? error.message : String(error));
-    }
+    await replyNotice(
+      ctx,
+      cwd
+        ? "The /cwd command was removed. Use /workspace <absolute-path>; each supergroup now has one fixed working root."
+        : "The /cwd command was removed. The working directory is now fixed to the supergroup's working root shown by /workspace.",
+    );
   }));
 }
 
 function registerProfileHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, sessions, projects, logger } = deps;
+  const { bot, config, sessions, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.command("mode", wrapUserFacingHandler("mode", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const preset = ctx.match.trim();
@@ -95,7 +83,7 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("sandbox", wrapUserFacingHandler("sandbox", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const sandboxMode = ctx.match.trim();
@@ -113,7 +101,7 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("approval", wrapUserFacingHandler("approval", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const approvalPolicy = ctx.match.trim();
@@ -131,39 +119,28 @@ function registerProfileHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("yolo", wrapUserFacingHandler("yolo", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
-
-    const value = ctx.match.trim().toLowerCase();
-    if (!value) {
-      const enabled = session.sandboxMode === "danger-full-access" && session.approvalPolicy === "never";
-      await replyCurrentSetting(ctx, "Current yolo", [textField("yolo", enabled ? "on" : "off")], "Usage: /yolo on|off");
-      return;
-    }
-    if (value !== "on" && value !== "off") {
-      await replyUsage(ctx, "/yolo on|off");
-      return;
-    }
-
-    const profile = profileFromPreset(value === "on" ? "yolo" : "write");
-    sessions.setSandboxMode(session.sessionKey, profile.sandboxMode);
-    sessions.setApprovalPolicy(session.sessionKey, profile.approvalPolicy);
     await replyNotice(
       ctx,
-      formatProfileReply(
-        value === "on" ? "YOLO enabled." : "YOLO disabled. Restored the write preset.",
-        profile.sandboxMode,
-        profile.approvalPolicy,
-      ),
+      [
+        "The /yolo command was removed.",
+        "Use /mode yolo to enable the YOLO preset.",
+        "Use /mode write to return to the standard write preset.",
+      ].join("\n"),
     );
   }));
 }
 
 function registerExecutionHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, sessions, projects, logger } = deps;
+  const { bot, config, sessions, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.command("model", wrapUserFacingHandler("model", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const model = ctx.match.trim();
@@ -177,7 +154,7 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("effort", wrapUserFacingHandler("effort", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -200,7 +177,7 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("web", wrapUserFacingHandler("web", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -223,7 +200,7 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("network", wrapUserFacingHandler("network", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -246,7 +223,7 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
   }));
 
   bot.command("gitcheck", wrapUserFacingHandler("gitcheck", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const value = ctx.match.trim().toLowerCase();
@@ -270,12 +247,16 @@ function registerExecutionHandlers(deps: SessionConfigDeps): void {
 }
 
 function registerAdvancedHandlers(deps: SessionConfigDeps): void {
-  const { bot, config, sessions, projects, appState, codex, logger } = deps;
+  const { bot, config, sessions, appState, codex, logger } = deps;
+  const workspaces = deps.workspaces ?? deps.projects;
+  if (!workspaces) {
+    throw new Error("Workspace store is required");
+  }
 
   bot.command("adddir", wrapUserFacingHandler("adddir", logger, async (ctx) => {
-    const project = getProjectForContext(ctx, projects);
-    const session = await requireScopedSession(ctx, sessions, projects, config);
-    if (!project || !session) return;
+    const workspace = getWorkspaceForContext(ctx, workspaces);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
+    if (!workspace || !session) return;
 
     const [command, ...rest] = ctx.match.trim().split(/\s+/).filter(Boolean);
     const args = rest.join(" ");
@@ -294,18 +275,18 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
           : {
               fields: [textField("directories", "none")],
             }),
-        footer: "Usage: /adddir add <path-inside-project> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear",
+        footer: "Usage: /adddir add <path-inside-working-root> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear",
       });
       return;
     }
 
     if (command === "add") {
       if (!args) {
-        await replyUsage(ctx, "/adddir add <path-inside-project>");
+        await replyUsage(ctx, "/adddir add <path-inside-working-root>");
         return;
       }
       try {
-        const directory = assertProjectScopedPath(args, project.cwd);
+        const directory = assertWorkspaceScopedPath(args, workspace.workingRoot);
         const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
         sessions.setAdditionalDirectories(session.sessionKey, next);
         await replyDocument(ctx, {
@@ -328,7 +309,7 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
         const next = [...session.additionalDirectories.filter((entry) => entry !== directory), directory];
         sessions.setAdditionalDirectories(session.sessionKey, next);
         await replyDocument(ctx, {
-          title: "Added external additional directory outside the project root.",
+          title: "Added external additional directory outside the working root.",
           fields: [codeField("directory", directory)],
           footer: "Codex can now read files there during future runs.",
         });
@@ -356,11 +337,11 @@ function registerAdvancedHandlers(deps: SessionConfigDeps): void {
       return;
     }
 
-    await replyUsage(ctx, "/adddir list | /adddir add <path-inside-project> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear");
+    await replyUsage(ctx, "/adddir list | /adddir add <path-inside-working-root> | /adddir add-external <absolute-path> | /adddir drop <index> | /adddir clear");
   }));
 
   bot.command("schema", wrapUserFacingHandler("schema", logger, async (ctx) => {
-    const session = await requireScopedSession(ctx, sessions, projects, config);
+    const session = await requireScopedSession(ctx, sessions, workspaces, config);
     if (!session) return;
 
     const raw = ctx.match.trim();

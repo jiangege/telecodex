@@ -1,6 +1,6 @@
 {
   "name": "telecodex",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Run local Codex from Telegram forum topics.",
   "license": "MIT",
   "type": "module",

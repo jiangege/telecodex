@@ -165,8 +165,8 @@ test("splitRenderedText preserves pre language when slicing long code blocks", (
 
 test("sendMediaMessage truncates captions and preserves caption entities", async () => {
   const { bot, sentPhotos } = createFakeBot();
-  const projectRoot = mkdtempSync(path.join(tmpdir(), "telecodex-caption-"));
-  const imagePath = path.join(projectRoot, "caption.png");
+  const workingRoot = mkdtempSync(path.join(tmpdir(), "telecodex-caption-"));
+  const imagePath = path.join(workingRoot, "caption.png");
   writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   try {
@@ -179,8 +179,7 @@ test("sendMediaMessage truncates captions and preserves caption entities", async
         messageThreadId: 2,
         source: imagePath,
         scope: {
-          projectRoot,
-          workingDirectory: projectRoot,
+          workingRoot,
         },
         caption: {
           caption: `${boldText}${linkedText}`,
@@ -200,7 +199,7 @@ test("sendMediaMessage truncates captions and preserves caption entities", async
       { type: "text_link", offset: 900, length: 124, url: "https://example.com/caption" },
     ]);
   } finally {
-    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(workingRoot, { recursive: true, force: true });
   }
 });
 

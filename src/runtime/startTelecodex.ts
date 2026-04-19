@@ -28,7 +28,7 @@ export async function startTelecodex(): Promise<void> {
       pid: process.pid,
     });
 
-    const { config, sessions, projects, admin, appState, bootstrapCode, botUsername } = await bootstrapRuntime();
+    const { config, sessions, workspaces, admin, appState, bootstrapCode, botUsername } = await bootstrapRuntime();
     const storedConfigOverrides = appState.get("codex_config_overrides");
     const { value: configOverrides, error: configOverridesError } = tryParseCodexConfigOverrides(storedConfigOverrides);
     if (configOverridesError) {
@@ -49,7 +49,7 @@ export async function startTelecodex(): Promise<void> {
     const bot = createBot({
       config,
       sessions,
-      projects,
+      workspaces,
       admin,
       appState,
       codex,
@@ -116,6 +116,11 @@ export async function startTelecodex(): Promise<void> {
       bootstrapPending: bootstrapCode != null,
       authorizedUserId: admin.getAuthorizedUserId(),
     });
+
+    const runnerTask = runner.task();
+    if (runnerTask) {
+      await runnerTask;
+    }
   } catch (error) {
     instanceLock?.release();
     logger.error("telecodex startup failed", error);

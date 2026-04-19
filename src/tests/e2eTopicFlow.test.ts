@@ -167,8 +167,8 @@ test("e2e topic flow runs Codex inside an existing project topic and reports sta
       buffers: harness.buffers,
     });
 
-    const projectReplies = await runCommand(harness, "project", `bind ${process.cwd()}`);
-    assert.match(projectReplies.at(-1) ?? "", /Project binding updated/);
+    const projectReplies = await runCommand(harness, "workspace", `${process.cwd()}`);
+    assert.match(projectReplies.at(-1) ?? "", /Working root updated/);
 
     const topicId = 201;
 
@@ -231,7 +231,7 @@ test("e2e topic flow ignores follow-up messages while the current run is active"
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 202;
     const sessionKey = `-100:${topicId}`;
 
@@ -286,7 +286,7 @@ test("e2e topic flow resumes an existing thread id", async () => {
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 203;
     const replies = await runCommand(harness, "thread", "resume thread-existing-777", topicId);
     assert.match(replies.at(-1) ?? "", /Current topic is now bound to the existing thread id/);
@@ -323,7 +323,7 @@ test("e2e topic flow interrupts an active run with /stop", async () => {
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 204;
     const sessionKey = `-100:${topicId}`;
 
@@ -366,7 +366,7 @@ test("e2e topic flow interrupts an active run with the Stop button callback", as
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 210;
     const sessionKey = `-100:${topicId}`;
 
@@ -408,7 +408,7 @@ test("e2e status recovers stale in-memory running state", async () => {
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 205;
     const sessionKey = `-100:${topicId}`;
     const bufferKey = sessionBufferKey(sessionKey);
@@ -456,7 +456,7 @@ test("e2e stop clears stale typing state before reporting no active run", async 
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 206;
     const sessionKey = `-100:${topicId}`;
     const bufferKey = sessionBufferKey(sessionKey);
@@ -502,7 +502,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 207;
     const sessionKey = `-100:${topicId}`;
 
@@ -510,7 +510,7 @@ test("e2e config commands feed the next SDK run profile", async () => {
     assert.equal(harness.store.get(sessionKey)?.sandboxMode, "workspace-write");
     assert.equal(harness.store.get(sessionKey)?.approvalPolicy, "on-request");
 
-    await runCommand(harness, "yolo", "on", topicId);
+    await runCommand(harness, "mode", "yolo", topicId);
     assert.equal(harness.store.get(sessionKey)?.sandboxMode, "danger-full-access");
     assert.equal(harness.store.get(sessionKey)?.approvalPolicy, "never");
 
@@ -530,24 +530,22 @@ test("e2e config commands feed the next SDK run profile", async () => {
     assert.equal(harness.store.getAppState("codex_config_overrides"), '{"model_verbosity":"high"}');
 
     const outsideReplies = await runCommand(harness, "cwd", "/", topicId);
-    assert.match(outsideReplies.at(-1) ?? "", /Path must stay within the project root/);
-    assert.equal(harness.store.get(sessionKey)?.cwd, process.cwd());
+    assert.match(outsideReplies.at(-1) ?? "", /The \/cwd command was removed/);
 
     const externalAddReplies = await runCommand(harness, "adddir", `add ${path.resolve(process.cwd(), "..")}`, topicId);
-    assert.match(externalAddReplies.at(-1) ?? "", /Path must stay within the project root/);
+    assert.match(externalAddReplies.at(-1) ?? "", /Path must stay within the working root/);
 
     const externalDirectory = path.resolve(process.cwd(), "..");
     await runCommand(harness, "adddir", `add-external ${externalDirectory}`, topicId);
 
-    const allowedCwd = `${process.cwd()}/src`;
-    await runCommand(harness, "cwd", allowedCwd, topicId);
-    assert.equal(harness.store.get(sessionKey)?.cwd, allowedCwd);
+    const workspaceReplies = await runCommand(harness, "workspace", `${process.cwd()}/src`);
+    assert.match(workspaceReplies.at(-1) ?? "", /Working root updated/);
 
     await runTextMessage(harness, topicId, "use configured profile");
     await waitFor(() => codex.calls.length === 1);
 
     const profile = codex.calls[0]?.profile;
-    assert.equal(profile?.cwd, allowedCwd);
+    assert.equal(profile?.cwd, `${process.cwd()}/src`);
     assert.equal(profile?.sandboxMode, "workspace-write");
     assert.equal(profile?.approvalPolicy, "on-failure");
     assert.equal(profile?.model, "gpt-test-e2e");
@@ -592,7 +590,7 @@ test("e2e image messages are ignored with the same busy notice while a run is ac
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 208;
     const sessionKey = `-100:${topicId}`;
 
@@ -635,7 +633,7 @@ test("e2e runs clear an invalid stored output schema and continue without it", a
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 209;
     const sessionKey = `-100:${topicId}`;
     createTopicSession(harness, topicId);
@@ -675,7 +673,7 @@ test("e2e image messages are sent to the SDK as local_image input", async () => 
       buffers: harness.buffers,
     });
 
-    await runCommand(harness, "project", `bind ${process.cwd()}`);
+    await runCommand(harness, "workspace", `${process.cwd()}`);
     const topicId = 209;
 
     await runImageMessage(harness, topicId, {

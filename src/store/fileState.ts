@@ -26,9 +26,9 @@ interface AppStateFile {
   values: Record<string, string>;
 }
 
-interface ProjectsFile {
+interface WorkspacesFile {
   version: number;
-  projects: StoredProjectBinding[];
+  workspaces: StoredWorkspaceBinding[];
 }
 
 interface SessionsFile {
@@ -36,13 +36,15 @@ interface SessionsFile {
   sessions: StoredSessionRecord[];
 }
 
-export interface StoredProjectBinding {
+export interface StoredWorkspaceBinding {
   chatId: string;
   name: string;
-  cwd: string;
+  workingRoot: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type StoredProjectBinding = StoredWorkspaceBinding;
 
 export interface StoredSessionRecord {
   sessionKey: string;
@@ -50,7 +52,6 @@ export interface StoredSessionRecord {
   messageThreadId: string | null;
   telegramTopicName: string | null;
   codexThreadId: string | null;
-  cwd: string;
   model: string;
   sandboxMode: SessionSandboxMode;
   approvalPolicy: SessionApprovalPolicy;
@@ -66,10 +67,11 @@ export interface StoredSessionRecord {
 
 export class FileStateStorage {
   private readonly appPath: string;
-  private readonly projectsPath: string;
+  private readonly workspacesPath: string;
+  private readonly legacyProjectsPath: string;
   private readonly sessionsPath: string;
   private readonly appState = new Map<string, string>();
-  private readonly projects = new Map<string, StoredProjectBinding>();
+  private readonly workspaces = new Map<string, StoredWorkspaceBinding>();
   private readonly sessions = new Map<string, StoredSessionRecord>();
   private readonly flushStateByPath = new Map<string, PendingFlushState>();
 
@@ -78,17 +80,22 @@ export class FileStateStorage {
       mkdirSync(rootDir, { recursive: true });
     }
     this.appPath = path.join(rootDir, "app.json");
-    this.projectsPath = path.join(rootDir, "projects.json");
+    this.workspacesPath = path.join(rootDir, "workspaces.json");
+    this.legacyProjectsPath = path.join(rootDir, "projects.json");
     this.sessionsPath = path.join(rootDir, "sessions.json");
 
     for (const [key, value] of Object.entries(loadAppStateFile(this.appPath).values)) {
       this.appState.set(key, value);
     }
-    for (const project of loadProjectsFile(this.projectsPath).projects) {
-      this.projects.set(project.chatId, normalizeStoredProjectBinding(project));
+    const loadedWorkspaces = loadWorkspacesFile(this.workspacesPath, this.legacyProjectsPath);
+    for (const workspace of loadedWorkspaces.workspaces) {
+      this.workspaces.set(workspace.chatId, normalizeStoredWorkspaceBinding(workspace));
     }
     for (const session of loadSessionsFile(this.sessionsPath).sessions) {
       this.sessions.set(session.sessionKey, normalizeStoredSessionRecord(session));
+    }
+    if (!existsSync(this.workspacesPath) && loadedWorkspaces.workspaces.length > 0) {
+      this.flushWorkspaces();
     }
   }
 
@@ -116,45 +123,70 @@ export class FileStateStorage {
     if (changed) this.flushAppState();
   }
 
-  getProject(chatId: string): StoredProjectBinding | null {
-    return cloneProjectBinding(this.projects.get(chatId) ?? null);
+  getWorkspace(chatId: string): StoredWorkspaceBinding | null {
+    return cloneWorkspaceBinding(this.workspaces.get(chatId) ?? null);
   }
 
-  upsertProject(input: { chatId: string; cwd: string; name: string; now?: string }): StoredProjectBinding {
-    const existing = this.projects.get(input.chatId);
+  getProject(chatId: string): StoredWorkspaceBinding | null {
+    return this.getWorkspace(chatId);
+  }
+
+  upsertWorkspace(input: { chatId: string; workingRoot: string; name: string; now?: string }): StoredWorkspaceBinding {
+    const existing = this.workspaces.get(input.chatId);
     const now = input.now ?? new Date().toISOString();
-    const project: StoredProjectBinding = {
+    const workspace: StoredWorkspaceBinding = {
       chatId: input.chatId,
-      cwd: path.resolve(input.cwd),
+      workingRoot: path.resolve(input.workingRoot),
       name: input.name.trim(),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    this.projects.set(project.chatId, project);
-    this.flushProjects();
-    return cloneProjectBinding(project)!;
+    this.workspaces.set(workspace.chatId, workspace);
+    this.flushWorkspaces();
+    return cloneWorkspaceBinding(workspace)!;
+  }
+
+  upsertProject(input: { chatId: string; cwd: string; name: string; now?: string }): StoredWorkspaceBinding {
+    return this.upsertWorkspace({
+      chatId: input.chatId,
+      workingRoot: input.cwd,
+      name: input.name,
+      ...(input.now ? { now: input.now } : {}),
+    });
+  }
+
+  removeWorkspace(chatId: string): void {
+    if (!this.workspaces.delete(chatId)) return;
+    this.flushWorkspaces();
   }
 
   removeProject(chatId: string): void {
-    if (!this.projects.delete(chatId)) return;
-    this.flushProjects();
+    this.removeWorkspace(chatId);
   }
 
-  listProjects(): StoredProjectBinding[] {
-    return [...this.projects.values()]
+  listWorkspaces(): StoredWorkspaceBinding[] {
+    return [...this.workspaces.values()]
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((project) => cloneProjectBinding(project)!)
-      .filter((project): project is StoredProjectBinding => project != null);
+      .map((workspace) => cloneWorkspaceBinding(workspace)!)
+      .filter((workspace): workspace is StoredWorkspaceBinding => workspace != null);
   }
 
-  mergeImportedProjects(projects: StoredProjectBinding[]): void {
+  listProjects(): StoredWorkspaceBinding[] {
+    return this.listWorkspaces();
+  }
+
+  mergeImportedWorkspaces(workspaces: StoredWorkspaceBinding[]): void {
     let changed = false;
-    for (const project of projects) {
-      if (this.projects.has(project.chatId)) continue;
-      this.projects.set(project.chatId, normalizeStoredProjectBinding(project));
+    for (const workspace of workspaces) {
+      if (this.workspaces.has(workspace.chatId)) continue;
+      this.workspaces.set(workspace.chatId, normalizeStoredWorkspaceBinding(workspace));
       changed = true;
     }
-    if (changed) this.flushProjects();
+    if (changed) this.flushWorkspaces();
+  }
+
+  mergeImportedProjects(projects: StoredWorkspaceBinding[]): void {
+    this.mergeImportedWorkspaces(projects);
   }
 
   getSession(sessionKey: string): StoredSessionRecord | null {
@@ -221,11 +253,11 @@ export class FileStateStorage {
     } satisfies AppStateFile);
   }
 
-  private flushProjects(): void {
-    this.scheduleJsonWrite(this.projectsPath, {
+  private flushWorkspaces(): void {
+    this.scheduleJsonWrite(this.workspacesPath, {
       version: FILE_STATE_VERSION,
-      projects: [...this.projects.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-    } satisfies ProjectsFile);
+      workspaces: [...this.workspaces.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    } satisfies WorkspacesFile);
   }
 
   private flushSessions(): void {
@@ -361,27 +393,42 @@ function loadAppStateFile(filePath: string): AppStateFile {
   }
 }
 
-function loadProjectsFile(filePath: string): ProjectsFile {
+function loadWorkspacesFile(filePath: string, legacyProjectsPath: string): WorkspacesFile {
   try {
     const parsed = readJsonFile(filePath);
+    if (parsed) {
+      if (!isRecord(parsed) || !Array.isArray(parsed.workspaces)) {
+        throw new Error(`Invalid workspaces state file: ${filePath}`);
+      }
+      return {
+        version: FILE_STATE_VERSION,
+        workspaces: parsed.workspaces.map((workspace) => normalizeStoredWorkspaceBinding(workspace)),
+      };
+    }
+  } catch (error) {
+    recoverCorruptStateFile(filePath, error);
+  }
+
+  try {
+    const parsed = readJsonFile(legacyProjectsPath);
     if (!parsed) {
       return {
         version: FILE_STATE_VERSION,
-        projects: [],
+        workspaces: [],
       };
     }
     if (!isRecord(parsed) || !Array.isArray(parsed.projects)) {
-      throw new Error(`Invalid projects state file: ${filePath}`);
+      throw new Error(`Invalid legacy projects state file: ${legacyProjectsPath}`);
     }
     return {
       version: FILE_STATE_VERSION,
-      projects: parsed.projects.map((project) => normalizeStoredProjectBinding(project)),
+      workspaces: parsed.projects.map((workspace) => normalizeStoredWorkspaceBinding(workspace)),
     };
   } catch (error) {
-    recoverCorruptStateFile(filePath, error);
+    recoverCorruptStateFile(legacyProjectsPath, error);
     return {
       version: FILE_STATE_VERSION,
-      projects: [],
+      workspaces: [],
     };
   }
 }
@@ -411,19 +458,25 @@ function loadSessionsFile(filePath: string): SessionsFile {
   }
 }
 
-function normalizeStoredProjectBinding(value: unknown): StoredProjectBinding {
+function normalizeStoredWorkspaceBinding(value: unknown): StoredWorkspaceBinding {
   if (!isRecord(value)) {
-    throw new Error("Invalid stored project binding");
+    throw new Error("Invalid stored workspace binding");
   }
-  if (typeof value.chatId !== "string" || typeof value.cwd !== "string") {
-    throw new Error("Stored project binding is missing required fields");
+  const workingRootInput =
+    typeof value.workingRoot === "string"
+      ? value.workingRoot
+      : typeof value.cwd === "string"
+        ? value.cwd
+        : null;
+  if (typeof value.chatId !== "string" || workingRootInput == null) {
+    throw new Error("Stored workspace binding is missing required fields");
   }
-  const cwd = path.resolve(value.cwd);
+  const workingRoot = path.resolve(workingRootInput);
   const now = new Date().toISOString();
   return {
     chatId: value.chatId,
-    cwd,
-    name: typeof value.name === "string" && value.name.trim() ? value.name : path.basename(cwd) || cwd,
+    workingRoot,
+    name: typeof value.name === "string" && value.name.trim() ? value.name : path.basename(workingRoot) || workingRoot,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
   };
@@ -436,7 +489,6 @@ function normalizeStoredSessionRecord(value: unknown): StoredSessionRecord {
   if (
     typeof value.sessionKey !== "string" ||
     typeof value.chatId !== "string" ||
-    typeof value.cwd !== "string" ||
     typeof value.model !== "string"
   ) {
     throw new Error("Stored session is missing required fields");
@@ -449,7 +501,6 @@ function normalizeStoredSessionRecord(value: unknown): StoredSessionRecord {
     messageThreadId: typeof value.messageThreadId === "string" ? value.messageThreadId : null,
     telegramTopicName: typeof value.telegramTopicName === "string" ? value.telegramTopicName : null,
     codexThreadId: typeof value.codexThreadId === "string" ? value.codexThreadId : null,
-    cwd: path.resolve(value.cwd),
     model: value.model.trim() || "gpt-5.4",
     sandboxMode: normalizeSandboxMode(value.sandboxMode),
     approvalPolicy: normalizeApprovalPolicy(value.approvalPolicy),
@@ -494,8 +545,8 @@ function recoverCorruptStateFile(filePath: string, error: unknown): void {
   }
 }
 
-function cloneProjectBinding(project: StoredProjectBinding | null): StoredProjectBinding | null {
-  return project ? { ...project } : null;
+function cloneWorkspaceBinding(workspace: StoredWorkspaceBinding | null): StoredWorkspaceBinding | null {
+  return workspace ? { ...workspace } : null;
 }
 
 function cloneSessionRecord(session: StoredSessionRecord | null): StoredSessionRecord | null {

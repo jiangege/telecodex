@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { assertProjectScopedFile, assertProjectScopedPath } from "../pathScope.js";
 
-test("assertProjectScopedPath rejects a symlink that escapes the project root", () => {
+test("assertProjectScopedPath rejects a symlink that escapes the working root", () => {
   const base = mkdtempSync(path.join(tmpdir(), "telecodex-path-"));
   try {
     const projectRoot = path.join(base, "project");
@@ -18,14 +18,14 @@ test("assertProjectScopedPath rejects a symlink that escapes the project root", 
 
     assert.throws(
       () => assertProjectScopedPath(escaped, projectRoot),
-      /Path must stay within the project root/,
+      /Path must stay within the working root/,
     );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });
 
-test("assertProjectScopedFile rejects files outside the project root", () => {
+test("assertProjectScopedFile rejects files outside the working root", () => {
   const base = mkdtempSync(path.join(tmpdir(), "telecodex-file-"));
   try {
     const projectRoot = path.join(base, "project");
@@ -38,7 +38,7 @@ test("assertProjectScopedFile rejects files outside the project root", () => {
 
     assert.throws(
       () => assertProjectScopedFile(escaped, projectRoot),
-      /File must stay within the project root/,
+      /File must stay within the working root/,
     );
   } finally {
     rmSync(base, { recursive: true, force: true });

@@ -144,7 +144,7 @@ test("legacy SQLite state migrates into file-backed state without importing runt
 
     assert.equal(admin.getAuthorizedUserId(), 101);
     assert.equal(appState.get("codex_bin"), "/usr/local/bin/codex");
-    assert.equal(projects.get("-100")?.cwd, "/repo/app");
+    assert.equal(projects.get("-100")?.workingRoot, "/repo/app");
 
     const session = store.get("-100:7");
     assert.ok(session);
@@ -257,7 +257,6 @@ test("legacy SQLite import is additive and does not overwrite existing file-back
       messageThreadId: "9",
       telegramTopicName: "Current Topic",
       codexThreadId: "thread-current",
-      cwd: "/current/project",
       model: "gpt-5.4",
       sandboxMode: "workspace-write",
       approvalPolicy: "never",
@@ -283,7 +282,7 @@ test("legacy SQLite import is additive and does not overwrite existing file-back
     const projects = new ProjectStore(storage);
     assert.equal(admin.getAuthorizedUserId(), 202);
     assert.equal(appState.get("codex_config_overrides"), '{"model_verbosity":"high"}');
-    assert.equal(projects.get("-100")?.cwd, "/current/project");
+    assert.equal(projects.get("-100")?.workingRoot, "/current/project");
     assert.equal(store.get("-100:9")?.codexThreadId, "thread-current");
   } finally {
     rmSync(dir, { recursive: true, force: true });

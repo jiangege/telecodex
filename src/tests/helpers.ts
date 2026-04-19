@@ -6,8 +6,8 @@ import type { Logger } from "../runtime/logger.js";
 import { AdminStore } from "../store/adminStore.js";
 import { AppStateStore } from "../store/appStateStore.js";
 import { FileStateStorage } from "../store/fileState.js";
-import { ProjectStore } from "../store/projectStore.js";
 import { SessionStore } from "../store/sessionStore.js";
+import { WorkspaceStore } from "../store/workspaceStore.js";
 
 type TestStoreFacade = SessionStore & {
   getAppState: (key: string) => string | null;
@@ -50,7 +50,8 @@ export function createTestStores(): {
   sessions: SessionStore;
   admin: AdminStore;
   appState: AppStateStore;
-  projects: ProjectStore;
+  workspaces: WorkspaceStore;
+  projects: WorkspaceStore;
   cleanup: () => void;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), "telecodex-test-"));
@@ -58,13 +59,15 @@ export function createTestStores(): {
   const sessions = new SessionStore(storage);
   const admin = new AdminStore(storage);
   const appState = new AppStateStore(storage);
+  const workspaces = new WorkspaceStore(storage);
   const store = createLegacyTestStoreAlias(sessions, admin, appState);
   return {
     store,
     sessions,
     admin,
     appState,
-    projects: new ProjectStore(storage),
+    workspaces,
+    projects: workspaces,
     cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }

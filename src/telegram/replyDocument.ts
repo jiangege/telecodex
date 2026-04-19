@@ -3,7 +3,7 @@ import type { MessageEntity } from "grammy/types";
 import type { Logger } from "../runtime/logger.js";
 import { sendTextChunks } from "./delivery.js";
 import { renderTelegramSemanticText } from "./renderer.js";
-import type { RenderedTelegramText, TelegramInline, TelegramSemanticDoc } from "./semantic.js";
+import type { RenderedTelegramText, TelegramBlock, TelegramInline, TelegramSemanticDoc } from "./semantic.js";
 import { semanticDoc, semanticParagraph, semanticText } from "./semantic.js";
 
 export type ReplyFieldValue = string | number | boolean | null | undefined;
@@ -11,7 +11,8 @@ export type ReplyFieldValue = string | number | boolean | null | undefined;
 export interface ReplyField {
   label: string;
   value: ReplyFieldValue;
-  style?: "plain" | "code";
+  style?: "plain" | "code" | "code_block";
+  language?: string;
 }
 
 export interface ReplySection {
@@ -50,18 +51,27 @@ export function codeField(label: string, value: ReplyFieldValue): ReplyField {
   };
 }
 
+export function codeBlockField(label: string, value: ReplyFieldValue, language = "bash"): ReplyField {
+  return {
+    label,
+    value,
+    style: "code_block",
+    language,
+  };
+}
+
 export function replyDocumentToTelegramSemanticDoc(document: ReplyDocument): TelegramSemanticDoc {
-  const blocks = [sectionBlock(document.title, document.fields)];
+  const blocks = sectionBlocks(document.title, document.fields);
 
   for (const section of document.sections ?? []) {
-    blocks.push(sectionBlock(section.title, section.fields, section.lines));
+    blocks.push(...sectionBlocks(section.title, section.fields, section.lines));
   }
 
   if (document.footer != null) {
     blocks.push(semanticParagraph(normalizeLines(document.footer).join("\n")));
   }
 
-  return semanticDoc(blocks.filter((block) => block.content.length > 0));
+  return semanticDoc(blocks.filter(nonEmptyBlock));
 }
 
 export function renderReplyDocument(document: ReplyDocument): RenderedTelegramText {
@@ -160,18 +170,30 @@ function targetFromContext(ctx: Context): ReplyTarget | null {
   };
 }
 
-function sectionBlock(title?: string, fields?: ReplyField[], lines?: string[]) {
+function sectionBlocks(title?: string, fields?: ReplyField[], lines?: string[]): TelegramBlock[] {
+  const blocks: TelegramBlock[] = [];
   const content: TelegramInline[] = [];
   if (title) {
     content.push({ type: "bold", children: [semanticText(title)] });
   }
   for (const field of fields ?? []) {
+    if (field.style === "code_block") {
+      appendLine(content, [semanticText(`${field.label}:`)]);
+      flushParagraph(blocks, content);
+      blocks.push({
+        type: "code_block",
+        code: formatValue(field.value),
+        ...(field.language ? { language: field.language } : {}),
+      });
+      continue;
+    }
     appendLine(content, fieldLine(field));
   }
   for (const line of lines ?? []) {
     appendLine(content, [semanticText(line)]);
   }
-  return semanticParagraph(content);
+  flushParagraph(blocks, content);
+  return blocks;
 }
 
 function fieldLine(field: ReplyField): TelegramInline[] {
@@ -191,6 +213,30 @@ function appendLine(content: TelegramInline[], line: TelegramInline[]): void {
     content.push(semanticText("\n"));
   }
   content.push(...line);
+}
+
+function flushParagraph(blocks: TelegramBlock[], content: TelegramInline[]): void {
+  if (content.length === 0) return;
+  blocks.push(semanticParagraph(content.slice()));
+  content.length = 0;
+}
+
+function nonEmptyBlock(block: TelegramBlock): boolean {
+  switch (block.type) {
+    case "paragraph":
+    case "heading":
+      return block.content.length > 0;
+    case "quote":
+      return block.blocks.length > 0;
+    case "code_block":
+      return block.code.length > 0;
+    case "list":
+      return block.items.length > 0;
+    case "table":
+      return (block.header?.length ?? 0) > 0 || block.rows.length > 0;
+    case "notice":
+      return block.blocks.length > 0 || (block.title?.length ?? 0) > 0;
+  }
 }
 
 function normalizeLines(lines: string | string[]): string[] {

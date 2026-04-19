@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { FileStateStorage, type StoredProjectBinding, type StoredSessionRecord } from "./fileState.js";
+import { FileStateStorage, type StoredSessionRecord, type StoredWorkspaceBinding } from "./fileState.js";
 import {
   DEFAULT_SESSION_PROFILE,
   isSessionApprovalPolicy,
@@ -28,11 +28,11 @@ export function migrateLegacySqliteState(input: {
   const db = new DatabaseSync(input.legacyDbPath);
   try {
     const appState = hasTable(db, "app_state") ? readAppState(db) : {};
-    const projects = hasTable(db, "projects") ? readProjects(db) : [];
+    const workspaces = hasTable(db, "projects") ? readWorkspaces(db) : [];
     const sessions = hasTable(db, "sessions") ? readSessions(db) : [];
 
     input.storage.mergeImportedAppState(appState);
-    input.storage.mergeImportedProjects(projects);
+    input.storage.mergeImportedWorkspaces(workspaces);
     input.storage.mergeImportedSessions(sessions);
     input.storage.setAppState(LEGACY_IMPORT_MARKER_KEY, new Date().toISOString());
     imported = true;
@@ -53,23 +53,23 @@ function readAppState(db: DatabaseSync): Record<string, string> {
   return values;
 }
 
-function readProjects(db: DatabaseSync): StoredProjectBinding[] {
+function readWorkspaces(db: DatabaseSync): StoredWorkspaceBinding[] {
   const rows = db.prepare("SELECT * FROM projects").all() as Array<Record<string, unknown>>;
-  const projects: StoredProjectBinding[] = [];
+  const workspaces: StoredWorkspaceBinding[] = [];
   for (const row of rows) {
     if (typeof row.chat_id !== "string" || typeof row.cwd !== "string") continue;
     const cwd = row.cwd.trim();
     if (!cwd) continue;
     const now = new Date().toISOString();
-    projects.push({
+    workspaces.push({
       chatId: row.chat_id,
       name: typeof row.name === "string" && row.name.trim() ? row.name : cwd,
-      cwd,
+      workingRoot: cwd,
       createdAt: typeof row.created_at === "string" ? row.created_at : now,
       updatedAt: typeof row.updated_at === "string" ? row.updated_at : now,
     });
   }
-  return projects;
+  return workspaces;
 }
 
 function readSessions(db: DatabaseSync): StoredSessionRecord[] {
@@ -79,7 +79,6 @@ function readSessions(db: DatabaseSync): StoredSessionRecord[] {
     if (
       typeof row.session_key !== "string" ||
       typeof row.chat_id !== "string" ||
-      typeof row.cwd !== "string" ||
       typeof row.model !== "string"
     ) {
       continue;
@@ -92,7 +91,6 @@ function readSessions(db: DatabaseSync): StoredSessionRecord[] {
       messageThreadId: typeof row.message_thread_id === "string" ? row.message_thread_id : null,
       telegramTopicName: typeof row.telegram_topic_name === "string" ? row.telegram_topic_name : null,
       codexThreadId: typeof row.codex_thread_id === "string" ? row.codex_thread_id : null,
-      cwd: row.cwd,
       model: row.model,
       sandboxMode: normalizeSandboxMode(row.sandbox_mode, row.mode),
       approvalPolicy: normalizeApprovalPolicy(row.approval_policy),

@@ -68,6 +68,7 @@ interface BufferState {
   chatId: number;
   messageThreadId: number | null;
   messageId: number;
+  startedAtMs: number;
   phase: "starting" | "running";
   replyMarkup: InlineKeyboardMarkup | null | undefined;
   text: string;
@@ -76,6 +77,7 @@ interface BufferState {
   reasoningSummaryText: string;
   toolOutputText: string;
   timer: MessageBufferTimer | null;
+  elapsedTimer: MessageBufferTimer | null;
   activityTimer: MessageBufferTimer | null;
   activityInFlight: boolean;
   lastSentSignature: string;
@@ -104,11 +106,17 @@ export class MessageBuffer {
     const previous = this.states.get(key);
     if (previous) {
       if (previous.timer) this.scheduler.clearTimeout(previous.timer);
+      if (previous.elapsedTimer) this.scheduler.clearTimeout(previous.elapsedTimer);
       this.stopActivityPulse(previous);
       this.states.delete(key);
     }
 
-    const startingMessage = renderPendingMessage("starting");
+    const startedAtMs = this.scheduler.now();
+    const startingMessage = renderPendingMessage({
+      phase: "starting",
+      startedAtMs,
+      nowMs: startedAtMs,
+    });
     const message = await sendTextMessage(
       this.bot,
       {
@@ -123,6 +131,7 @@ export class MessageBuffer {
       chatId: input.chatId,
       messageThreadId: input.messageThreadId,
       messageId: message.message_id,
+      startedAtMs,
       phase: "starting",
       replyMarkup: input.replyMarkup,
       text: "",
@@ -131,6 +140,7 @@ export class MessageBuffer {
       reasoningSummaryText: "",
       toolOutputText: "",
       timer: null,
+      elapsedTimer: null,
       activityTimer: null,
       activityInFlight: false,
       lastSentSignature: signatureOf(startingMessage, input.replyMarkup),
@@ -138,6 +148,7 @@ export class MessageBuffer {
     };
     this.states.set(key, state);
     this.startActivityPulse(state);
+    this.scheduleElapsedRefresh(key, state);
     return message.message_id;
   }
 
@@ -197,18 +208,15 @@ export class MessageBuffer {
     this.scheduleFlush(key, state);
   }
 
-  rename(from: string, to: string): void {
-    const state = this.states.get(from);
-    if (!state) return;
-    this.states.delete(from);
-    this.states.set(to, state);
-  }
-
   dispose(): void {
     for (const state of this.states.values()) {
       if (state.timer) {
         this.scheduler.clearTimeout(state.timer);
         state.timer = null;
+      }
+      if (state.elapsedTimer) {
+        this.scheduler.clearTimeout(state.elapsedTimer);
+        state.elapsedTimer = null;
       }
       this.stopActivityPulse(state);
     }
@@ -219,6 +227,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) this.scheduler.clearTimeout(state.timer);
+    if (state.elapsedTimer) this.scheduler.clearTimeout(state.elapsedTimer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       const text = (finalMarkdown ?? state.text).trim();
@@ -292,6 +301,7 @@ export class MessageBuffer {
     const state = this.states.get(key);
     if (!state) return;
     if (state.timer) this.scheduler.clearTimeout(state.timer);
+    if (state.elapsedTimer) this.scheduler.clearTimeout(state.elapsedTimer);
     this.stopActivityPulse(state);
     await this.enqueue(state, async () => {
       state.replyMarkup = null;
@@ -306,7 +316,7 @@ export class MessageBuffer {
     await this.enqueue(state, async () => {
       const latest = this.states.get(key);
       if (!latest) return;
-      const message = composePendingMessage(latest);
+      const message = composePendingMessage(latest, this.scheduler.now());
       const signature = signatureOf(message, latest.replyMarkup);
       if (signature === latest.lastSentSignature) return;
       await this.safeEdit(latest, message);
@@ -319,6 +329,18 @@ export class MessageBuffer {
       state.timer = null;
       void this.flush(key);
     }, this.updateIntervalMs);
+  }
+
+  private scheduleElapsedRefresh(key: string, state: BufferState): void {
+    if (state.elapsedTimer) return;
+    state.elapsedTimer = this.scheduler.setTimeout(() => {
+      state.elapsedTimer = null;
+      const latest = this.states.get(key);
+      if (latest) {
+        this.scheduleElapsedRefresh(key, latest);
+      }
+      void this.flush(key);
+    }, nextElapsedRefreshDelayMs(this.scheduler.now() - state.startedAtMs));
   }
 
   private async safeEdit(state: BufferState, message: RenderedTelegramText): Promise<void> {
@@ -440,12 +462,19 @@ function maybeUnref(timer: MessageBufferTimer): void {
   }
 }
 
-function renderPendingMessage(phase: BufferState["phase"]): RenderedTelegramText {
-  return renderTelegramSemanticText(semanticDoc([semanticHeading(pendingBanner(phase))])) ?? renderPlainForTelegram(pendingBanner(phase));
+function renderPendingMessage(input: {
+  phase: BufferState["phase"];
+  startedAtMs: number;
+  nowMs: number;
+}): RenderedTelegramText {
+  const banner = pendingBanner(input.phase, input.nowMs - input.startedAtMs);
+  return renderTelegramSemanticText(semanticDoc([semanticHeading(banner)])) ?? renderPlainForTelegram(banner);
 }
 
-function composePendingMessage(state: BufferState): RenderedTelegramText {
-  const blocks: TelegramBlock[] = [semanticHeading(pendingBanner(state.phase))];
+function composePendingMessage(state: BufferState, nowMs: number): RenderedTelegramText {
+  const blocks: TelegramBlock[] = [
+    semanticHeading(pendingBanner(state.phase, nowMs - state.startedAtMs)),
+  ];
 
   const planBlocks = renderListSection("Plan", state.planText, {
     maxLines: MAX_PLAN_LINES,
@@ -477,11 +506,20 @@ function composePendingMessage(state: BufferState): RenderedTelegramText {
     blocks.push(...toolBlocks);
   }
 
-  return takeFirstPendingChunk(renderTelegramSemanticText(semanticDoc(blocks)) ?? renderPendingMessage(state.phase));
+  return takeFirstPendingChunk(
+    renderTelegramSemanticText(semanticDoc(blocks))
+      ?? renderPendingMessage({
+        phase: state.phase,
+        startedAtMs: state.startedAtMs,
+        nowMs,
+      }),
+  );
 }
 
-function pendingBanner(phase: BufferState["phase"]): string {
-  return phase === "running" ? "Working..." : "Starting...";
+function pendingBanner(phase: BufferState["phase"], elapsedMs: number): string {
+  const base = phase === "running" ? "Working..." : "Starting...";
+  const elapsed = formatElapsedShort(elapsedMs);
+  return elapsed ? `${base} ${elapsed}` : base;
 }
 
 function signatureOf(message: RenderedTelegramText, replyMarkup: InlineKeyboardMarkup | null | undefined): string {
@@ -499,6 +537,44 @@ function truncateTail(text: string, maxLength: number): string {
 
 function takeFirstPendingChunk(message: RenderedTelegramText): RenderedTelegramText {
   return splitRenderedText(message, MAX_PENDING_EDIT_LENGTH)[0] ?? renderPlainForTelegram("Working...");
+}
+
+function formatElapsedShort(elapsedMs: number): string | null {
+  const elapsedSeconds = Math.floor(Math.max(0, elapsedMs) / 1_000);
+  if (elapsedSeconds < 1) return null;
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h`;
+
+  return `${Math.floor(elapsedHours / 24)}d`;
+}
+
+function nextElapsedRefreshDelayMs(elapsedMs: number): number {
+  const elapsedSeconds = Math.floor(Math.max(0, elapsedMs) / 1_000);
+  if (elapsedSeconds < 60) {
+    return remainderToNextUnit(elapsedMs, 1_000);
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return remainderToNextUnit(elapsedMs, 60_000);
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return remainderToNextUnit(elapsedMs, 3_600_000);
+  }
+
+  return remainderToNextUnit(elapsedMs, 86_400_000);
+}
+
+function remainderToNextUnit(elapsedMs: number, unitMs: number): number {
+  const remainder = Math.max(0, elapsedMs) % unitMs;
+  return remainder === 0 ? unitMs : unitMs - remainder;
 }
 
 function renderListSection(

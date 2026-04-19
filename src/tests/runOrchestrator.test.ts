@@ -96,6 +96,7 @@ function createDeferredTurnRuntime() {
 test("handleUserText sends a fixed busy notice when a session already has an active SDK run", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot, sent } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -118,7 +119,7 @@ test("handleUserText sends a fixed busy notice when a session already has an act
       sessions: store,
       projects,
       codex: createConfigRuntime([], { running: true }) as never,
-      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      buffers,
       bot,
       logger: createNoopLogger(),
     });
@@ -128,6 +129,7 @@ test("handleUserText sends a fixed busy notice when a session already has an act
     assert.match(sent.at(-1)?.text ?? "", /New messages are ignored until the current run finishes or fails/);
     assert.match(sent.at(-1)?.text ?? "", /Use the Stop button to interrupt it/);
   } finally {
+    buffers.dispose();
     cleanup();
   }
 });
@@ -135,6 +137,7 @@ test("handleUserText sends a fixed busy notice when a session already has an act
 test("handleUserText starts a SDK run, persists thread id, and finishes idle", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot, edited } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -160,7 +163,7 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
       sessions: store,
       projects,
       codex: createConfigRuntime(events) as never,
-      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      buffers,
       bot,
       logger: createNoopLogger(),
     });
@@ -173,6 +176,7 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
     assert.equal(latest?.runtimeStatus, "idle");
     assert.ok(edited.some((entry) => entry.text.includes("final answer")));
   } finally {
+    buffers.dispose();
     cleanup();
   }
 });
@@ -180,6 +184,8 @@ test("handleUserText starts a SDK run, persists thread id, and finishes idle", a
 test("handleUserText creates the working buffer with a Stop button", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot, sent } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
+  const deferred = createDeferredTurnRuntime();
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -196,8 +202,8 @@ test("handleUserText creates the working buffer with a Stop button", async () =>
       session,
       sessions: store,
       projects,
-      codex: createDeferredTurnRuntime().runtime as never,
-      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      codex: deferred.runtime as never,
+      buffers,
       bot,
       logger: createNoopLogger(),
     });
@@ -207,7 +213,11 @@ test("handleUserText creates the working buffer with a Stop button", async () =>
     assert.deepEqual(startingMessage?.options?.reply_markup, {
       inline_keyboard: [[{ text: "Stop", callback_data: encodeStopCallbackData({ chatId: -100, messageThreadId: 213 }) }]],
     });
+    deferred.startTurn();
+    deferred.finishTurn();
+    await new Promise((resolve) => setTimeout(resolve, 20));
   } finally {
+    buffers.dispose();
     cleanup();
   }
 });
@@ -215,6 +225,7 @@ test("handleUserText creates the working buffer with a Stop button", async () =>
 test("handleUserText stays preparing until the SDK emits turn.started", async () => {
   const { store, projects, cleanup } = createTestStores();
   const { bot } = createFakeBot();
+  const buffers = new MessageBuffer(bot, 1, createNoopLogger());
   try {
     projects.upsert({ chatId: "-100", cwd: process.cwd() });
     const session = store.getOrCreate({
@@ -233,7 +244,7 @@ test("handleUserText stays preparing until the SDK emits turn.started", async ()
       sessions: store,
       projects,
       codex: deferred.runtime as never,
-      buffers: new MessageBuffer(bot, 1, createNoopLogger()),
+      buffers,
       bot,
       logger: createNoopLogger(),
     });
@@ -253,6 +264,7 @@ test("handleUserText stays preparing until the SDK emits turn.started", async ()
     latest = store.get(session.sessionKey);
     assert.equal(latest?.runtimeStatus, "idle");
   } finally {
+    buffers.dispose();
     cleanup();
   }
 });

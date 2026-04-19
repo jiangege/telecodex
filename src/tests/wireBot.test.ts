@@ -84,11 +84,18 @@ test("wireBot syncs Telegram command menus for private chats and groups", async 
       { type: "all_private_chats" },
       { type: "all_group_chats" },
     ]);
+    assert.ok(botCommands[0]?.commands.every((entry) => entry.command !== "status"));
     assert.ok(botCommands[0]?.commands.some((entry) => entry.command === "admin"));
     assert.ok(botCommands[0]?.commands.some((entry) => entry.description === "Show or hand off admin access"));
     assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "help"));
+    assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "workspace"));
     assert.ok(botCommands[1]?.commands.some((entry) => entry.command === "thread"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "yolo"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "sandbox"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "approval"));
     assert.ok(botCommands[1]?.commands.some((entry) => entry.description === "List, resume, or create topics"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "project"));
+    assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "cwd"));
     assert.ok(botCommands[1]?.commands.every((entry) => entry.command !== "queue"));
   } finally {
     cleanup();
